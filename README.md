@@ -16,8 +16,37 @@ Players must outmaneuver rivals to be the last bike standing.
 
 
 ## AI Design
-- **Finite State Machine (FSM):** States include `Patrol → Chase → Predictive Cut off → Evade`.  
-- **Decision-Making / Pathfinding:** NPCs decide whether to chase, cut off, use portals, or grab power-ups.  
+**Finite State Machine (FSM)**
+
+The AI bot controlling enemy hoverbikes uses a **Finite State Machine** (FSM) to balance aggression, survival, and navigation.  
+Each bot continuously analyzes space around it using **spherecasts** (forward, side, and diagonal probes).  
+Depending on sensor readings and nearby opponents, the bot transitions between four main states:
+
+### **States**
+- **Scout:**  
+  Default behavior. The bot moves forward constantly, scanning for open space and avoiding trails/walls using forward and side probes.  
+  It chooses gentle turns toward the roomiest direction.
+
+- **Evade:**  
+  Triggered when an obstacle or wall is close on any side. The bot performs sharp avoidance maneuvers to steer back into open space.  
+  Prioritizes survival over chasing targets.
+
+- **Emergency:**  
+  Activated when an obstacle or wall is dangerously close in front.  
+  The bot executes a **hard drift turn** with maximum steering force and temporary drift mode for a tighter carve to escape.  
+  Drift continues for a short “hang time” after exiting Emergency.
+
+- **Cutoff:**  
+  When an opponent is within range and crossing the bot’s trajectory, the bot turns to intercept or “cut off” their path.  
+  If blocked or out of range, returns to **Scout** or **Evade**.
+
+---
+
+### **FSM Diagram**
+
+![alt text](Phaseline_Bot_FSM.drawio.png)
+
+**Decision-Making / Pathfinding:** NPCs decide whether to chase, cut off, use portals, or grab power-ups.  
 
 
 ## Scripted Events
@@ -49,3 +78,6 @@ Players must outmaneuver rivals to be the last bike standing.
 - Laser weapon as an additional attack option.  
 - Local split-screen multiplayer.  
 - Arena variants (loops, vertical surfaces, portal-heavy maps). 
+
+## Gameplay Video
+https://youtu.be/14jkTXgq2Fs
