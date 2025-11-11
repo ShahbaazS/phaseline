@@ -1,13 +1,22 @@
+using System.IO;
+using System.Collections;
 using UnityEngine;
+using System.Collections.Generic;
 
 [RequireComponent(typeof(BikeController))]
 [RequireComponent(typeof(Rigidbody))]
 public class BotController : MonoBehaviour
 {
     // -------- FSM --------
-    public enum BotState { Scout, Evade, Cutoff, Emergency }
+    public enum BotState { Scout, Evade, Cutoff, Emergency, Pathfind }
     public BotState State { get; private set; } = BotState.Scout;
 
+    // --- Pathfinding ---
+    BotPathfinder path;
+    [SerializeField] float pathHangTime = 0.35f;
+    float pathHangT = 0f;
+    Transform currentGoal; // cache to avoid re-calling SetTarget every frame
+    
     // -------- Sensing --------
     [Header("Sensing (set Wall + Trail)")]
     public LayerMask obstacleMask;
@@ -31,6 +40,17 @@ public class BotController : MonoBehaviour
     [Header("Opponents (optional)")]
     public Transform[] opponents;
     public float cutoffProbe = 22f;
+
+    [Header("Attack Targeting")]
+    public float attackRange = 40f;
+    public float attackStickiness = 0.6f;     // seconds to keep chasing even if score dips
+    public float attackLeadSeconds = 0.7f;    // how far ahead to lead
+    public float maxLeadDistance = 12f;       // clamp lead distance
+    public LayerMask losMask = ~0;            // walls/trails for LOS checks
+
+    float attackHangT = 0f;
+    Transform currentOpponent;                // cached best opponent across frames
+    Vector3 lastLead;                         // last chosen lead (for continuity)
 
     // -------- Gizmos --------
     [Header("Gizmos")]
@@ -57,7 +77,8 @@ public class BotController : MonoBehaviour
     {
         bike = GetComponent<BikeController>();
         rb   = GetComponent<Rigidbody>();
-        tr   = transform;
+        tr = transform;
+        path = GetComponent<BotPathfinder>();
         seededBias = Random.value < 0.5f ? -1 : +1;
     }
 
@@ -84,7 +105,7 @@ public class BotController : MonoBehaviour
             lastDR = SpaceDiag(+1, out _, out drOrigin, out drDir, out drHitPoint);
         }
 
-        // 1) Emergency
+        // 1) Emergency override
         if (lastF < dangerDist)
         {
             float turn = TurnToMoreSpace();
@@ -93,27 +114,54 @@ public class BotController : MonoBehaviour
 
             State = BotState.Emergency;
 
-            // arm/extend the hang timer so drift stays on briefly after leaving Emergency
             if (driftDuringEmergency)
                 emergencyDriftT = Mathf.Max(emergencyDriftT, emergencyDriftHangTime);
+
+            // HARD escape; disable path steering this frame
+            if (path && path.enabled) path.enabled = false;
 
             Drive(turn, 1f, driftDuringEmergency);
             return;
         }
 
-        // decrement the hang timer outside Emergency
+        // drift hang after emergency
         if (emergencyDriftT > 0f) emergencyDriftT -= Time.fixedDeltaTime;
 
-        // 2) Evade
+        // 2) Pathfinding decision
+        bool pickedAttack = TryPickBestOpponent(out var opp, out var leadPoint);
+
+        Transform goal = FindNearestGoal();                 // portals/powerups (your existing method)
+        bool hasGoal = goal != null;
+
+        // choose which path to use this frame
+        if (pickedAttack)
+        {
+            State = BotState.Pathfind;
+            if (path && !path.enabled) path.enabled = true;
+            if (path) path.SetTargetPosition(leadPoint);    // position goal (lead point)
+            return; // IMPORTANT: don't also run manual Drive this frame
+        }
+        else if (hasGoal)
+        {
+            State = BotState.Pathfind;
+            if (path && !path.enabled) path.enabled = true;
+            if (path) path.SetTarget(goal);                 // transform goal
+            return;
+        }
+        else
+        {
+            if (path && path.enabled) path.enabled = false; // give control back to reactive FSM
+        }
+
+        // 3) Evade when tight
         if (BlockedAhead() || TightLeft() || TightRight())
         {
             State = BotState.Evade;
-            // use drift hang only if it's still ticking (optional “finish the carve”)
             Drive(TurnToMoreSpace(), 1f, driftDuringEmergency && emergencyDriftT > 0f);
             return;
         }
 
-        // 3) Cutoff
+        // 4) Cutoff opportunity
         if (TryCutoff(out float cutTurn))
         {
             State = BotState.Cutoff;
@@ -121,7 +169,7 @@ public class BotController : MonoBehaviour
             return;
         }
 
-        // 4) Scout
+        // 5) Scout default
         State = BotState.Scout;
         Drive(ChooseMaxSpaceTurn(), 1f, driftDuringEmergency && emergencyDriftT > 0f);
     }
@@ -134,7 +182,7 @@ public class BotController : MonoBehaviour
     }
 
     // -------------------- PROBES --------------------
-    Vector3 Up()    => Vector3.up;
+    Vector3 Up()    => SurfaceUp();
     Vector3 Fwd()   => Vector3.ProjectOnPlane(tr.forward, Up()).normalized;
     Vector3 Right() => Vector3.Cross(Up(), Fwd()).normalized;
     Vector3 RayOrigin() => tr.position + Up()*0.6f;
@@ -223,10 +271,147 @@ public class BotController : MonoBehaviour
         return best;
     }
 
+    // Gather *all* possible enemy roots (player + other bots). Prefer your SpawnManager, else scene scan.
+    IEnumerable<Transform> EnumerateOpponents()
+    {
+        // If you already keep an opponents[] array, yield those here.
+        // Fallback: scan all bikes (tag "Bike") and filter self.
+        foreach (var go in GameObject.FindGameObjectsWithTag("Player"))
+        {
+            if (!go) continue;
+            var t = go.transform;
+            if (t == transform) continue;
+
+            yield return t;
+        }
+    }
+
+    Vector3 SurfaceUp()
+    {
+        if (Physics.Raycast(transform.position + Vector3.up*0.5f, Vector3.down, out var hit, 3f, ~0, QueryTriggerInteraction.Ignore))
+            return hit.normal;
+        return Vector3.up;
+    }
+
+    bool HasLOS(Vector3 from, Vector3 to)
+    {
+        var dir = to - from;
+        if (dir.sqrMagnitude < 0.01f) return true;
+        return !Physics.Raycast(from, dir.normalized, dir.magnitude, losMask, QueryTriggerInteraction.Ignore);
+    }
+
+    static float CrossingMagnitude(Vector3 aDir, Vector3 bDir)
+    {
+        // how “crossing” the headings are (0 parallel…1 perpendicular/opposed)
+        return Mathf.Abs(Vector3.Cross(aDir.normalized, bDir.normalized).y);
+    }
+
+    Vector3 PredictLead(Transform tgt, float leadSec, float maxLead, Vector3 up)
+    {
+        Vector3 pos = tgt.position;
+        Vector3 vel = Vector3.zero;
+        if (tgt.TryGetComponent<Rigidbody>(out var rb)) vel = rb.linearVelocity;
+        vel = Vector3.ProjectOnPlane(vel, up);
+        if (vel.sqrMagnitude < 0.01f) return pos;
+
+        var lead = pos + Vector3.ClampMagnitude(vel * leadSec, maxLead);
+        return lead;
+    }
+
+    // Utility score for any opponent
+    float ScoreOpponent(Transform opp, Vector3 up, out Vector3 aimPoint)
+    {
+        aimPoint = opp.position;
+        var to = opp.position - transform.position;
+        float dist = to.magnitude;
+        if (dist > attackRange) return -1f;          // out of range
+
+        bool los = HasLOS(transform.position, opp.position);
+        float losScore = los ? 1f : 0.25f;
+
+        // Heading crossing (prefer intercepts)
+        var myF = Vector3.ProjectOnPlane(transform.forward, up);
+        var oppF = myF;
+        if (opp) oppF = Vector3.ProjectOnPlane(opp.forward, up);
+        float cross = CrossingMagnitude(myF, oppF);  // 0..1
+
+        // Distance score (closer is better)
+        float dScore = Mathf.Clamp01(1f - (dist / attackRange));
+
+        // Predict lead and use that as aim point
+        aimPoint = PredictLead(opp, attackLeadSeconds, maxLeadDistance, up);
+
+        // Blend: weight distance the most, then LOS, then crossing
+        float score = dScore * 0.70f + losScore * 0.20f + cross * 0.10f;
+        return score; // 0..1
+    }
+
+    // Find best opponent among *all* bikes (player + bots), with stickiness
+    bool TryPickBestOpponent(out Transform best, out Vector3 leadPoint)
+    {
+        best = null; leadPoint = Vector3.zero;
+        Vector3 up = SurfaceUp();
+
+        float bestScore = -1f; Vector3 bestLead = Vector3.zero;
+        foreach (var t in EnumerateOpponents())
+        {
+            var s = ScoreOpponent(t, up, out var lead);
+            if (s > bestScore)
+            {
+                bestScore = s; best = t; bestLead = lead;
+            }
+        }
+
+        // stickiness: if currentOpponent exists, prefer it unless a new score is significantly better
+        if (currentOpponent && best && best != currentOpponent)
+        {
+            var curScore = ScoreOpponent(currentOpponent, up, out var curLead);
+            // small hysteresis: require +0.1 improvement to retarget
+            if (curScore >= 0f && curScore + 0.10f >= bestScore)
+            {
+                best = currentOpponent; bestLead = curLead; bestScore = curScore;
+            }
+        }
+
+        if (bestScore >= 0f)
+        {
+            currentOpponent = best;
+            lastLead = bestLead;
+            attackHangT = attackStickiness; // refresh stickiness
+            leadPoint = bestLead;
+            return true;
+        }
+
+        // allow short hang after losing everyone
+        if (attackHangT > 0f && currentOpponent)
+        {
+            attackHangT -= Time.fixedDeltaTime;
+            // keep last known lead for a moment
+            best = currentOpponent; leadPoint = lastLead;
+            return true;
+        }
+
+        currentOpponent = null;
+        return false;
+    }
+
+
     static float ToLocalX(Vector3 dir, Vector3 fwd, Vector3 up)
     {
         if (dir.sqrMagnitude < 1e-6f) return 0f;
         return Mathf.Clamp((Quaternion.Inverse(Quaternion.LookRotation(fwd, up)) * dir).x, -1f, 1f);
+    }
+
+    Transform FindNearestGoal()
+    {
+        var gos = GameObject.FindGameObjectsWithTag("Portal");
+        Transform best = null; float bd = float.MaxValue; Vector3 p = transform.position;
+        foreach (var g in gos)
+        {
+            float d = (g.transform.position - p).sqrMagnitude;
+            if (d < bd) { bd = d; best = g.transform; }
+        }
+        return best;
     }
 
     // -------------------- GIZMOS --------------------

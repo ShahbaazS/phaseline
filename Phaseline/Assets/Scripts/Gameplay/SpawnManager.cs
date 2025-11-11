@@ -1,6 +1,7 @@
 using UnityEngine;
 using System.Collections.Generic;
 using System.Linq;
+using UnityEngine.AI;
 
 public class SpawnManager : MonoBehaviour
 {
@@ -114,6 +115,9 @@ public class SpawnManager : MonoBehaviour
 
         if (go.TryGetComponent<TrailMesh>(out var trail))
             trail.ResumeTrail();
+
+        if (go.TryGetComponent<NavMeshAgent>(out var agent))
+            agent.Warp(go.transform.position);
 
         // now enable spawn protection
         if (go.TryGetComponent<SpawnProtection>(out var prot))

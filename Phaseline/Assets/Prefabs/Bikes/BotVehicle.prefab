@@ -19,6 +19,8 @@ GameObject:
   - component: {fileID: -6055605645704936408}
   - component: {fileID: 7367596261246635285}
   - component: {fileID: -821506728515354242}
+  - component: {fileID: 2838971916320524386}
+  - component: {fileID: 3467345540361015229}
   m_Layer: 6
   m_Name: BotVehicle
   m_TagString: Player
@@ -70,7 +72,7 @@ Rigidbody:
   m_UseGravity: 1
   m_IsKinematic: 0
   m_Interpolate: 1
-  m_Constraints: 112
+  m_Constraints: 0
   m_CollisionDetection: 2
 --- !u!136 &2853537140943497397
 CapsuleCollider:
@@ -143,7 +145,7 @@ MonoBehaviour:
   jumpForce: 8
   groundLayer:
     serializedVersion: 2
-    m_Bits: 512
+    m_Bits: 1024
   groundOffset: 0.5
   gravity: {x: 0, y: -25, z: 0}
   visualModel: {fileID: 2401774131844380380}
@@ -224,6 +226,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: bb76d45b082928d4ab88b2b747b9f109, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
+  pathHangTime: 0.35
   obstacleMask:
     serializedVersion: 2
     m_Bits: 768
@@ -231,11 +234,20 @@ MonoBehaviour:
   sideProbe: 18
   diagProbe: 24
   hullRadius: 0.4
+  driftDuringEmergency: 1
+  emergencyDriftHangTime: 0.2
   steerAggression: 0.9
   redecideTime: 0.25
   dangerDist: 10
   opponents: []
   cutoffProbe: 22
+  attackRange: 40
+  attackStickiness: 0.6
+  attackLeadSeconds: 0.7
+  maxLeadDistance: 12
+  losMask:
+    serializedVersion: 2
+    m_Bits: 4294967295
   drawGizmosAlways: 1
   drawDiagonals: 1
   drawNormals: 0
@@ -293,6 +305,51 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   offset: {x: 0, y: 1.6, z: 0}
   faceCamera: 1
+--- !u!195 &2838971916320524386
+NavMeshAgent:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 619997654196117947}
+  m_Enabled: 1
+  m_AgentTypeID: 0
+  m_Radius: 1
+  m_Speed: 0
+  m_Acceleration: 0
+  avoidancePriority: 50
+  m_AngularSpeed: 0
+  m_StoppingDistance: 0
+  m_AutoTraverseOffMeshLink: 0
+  m_AutoBraking: 1
+  m_AutoRepath: 1
+  m_Height: 0.5
+  m_BaseOffset: 0
+  m_WalkableMask: 4294967295
+  m_ObstacleAvoidanceType: 4
+--- !u!114 &3467345540361015229
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 619997654196117947}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 76cf6cc4a3bcedc4993385de8d292b2f, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  target: {fileID: 0}
+  replanEvery: 0.25
+  turnGain: 3000
+  drawPathGizmos: 1
+  verboseLogs: 1
+  steerGainBase: 2
+  steerGainPerSpeed: 0.2
+  brakeAngleDeg: 35
+  driftAngleDeg: 55
+  steerClamp: 1
+  arriveDist: 2
 --- !u!1 &824452178938277984
 GameObject:
   m_ObjectHideFlags: 0

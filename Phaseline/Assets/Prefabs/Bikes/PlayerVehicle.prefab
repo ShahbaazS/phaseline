@@ -142,7 +142,7 @@ MonoBehaviour:
   jumpForce: 8
   groundLayer:
     serializedVersion: 2
-    m_Bits: 512
+    m_Bits: 1024
   groundOffset: 0.5
   gravity: {x: 0, y: -25, z: 0}
   visualModel: {fileID: 2401774131844380380}

@@ -79,5 +79,7 @@ Depending on sensor readings and nearby opponents, the bot transitions between f
 - Local split-screen multiplayer.  
 - Arena variants (loops, vertical surfaces, portal-heavy maps). 
 
-## Gameplay Video
-https://youtu.be/14jkTXgq2Fs
+## Gameplay Videos
+FSM: https://youtu.be/14jkTXgq2Fs
+Pathfinding + Decision-making: https://youtu.be/na4aE98YMPQ
+

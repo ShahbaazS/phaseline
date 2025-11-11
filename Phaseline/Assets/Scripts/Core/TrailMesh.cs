@@ -93,12 +93,7 @@ public class TrailMesh : MonoBehaviour
         var colorizer = GetComponentInParent<BikeRandomColor>();
         if (colorizer)
         {
-            // If your BikeRandomColor has Apply() that tints all children,
-            // keeping the renderer as a child now is enough:
             colorizer.ApplyToRenderer(mr);
-
-            // (Optional) if you add an API to tint a specific renderer, call it here:
-            // colorizer.ApplyToRenderer(mr);
         }
 
         lastPos = trailEmitter.position;
@@ -236,9 +231,20 @@ public class TrailMesh : MonoBehaviour
         lastPos = trailEmitter ? trailEmitter.position : transform.position;
     }
 
+    public void PauseTrail()
+    {
+        trailActive = false;
+    }
+
     public void ResumeTrail()
     {
         lastPos = trailEmitter ? trailEmitter.position : transform.position;
+        trailActive = true;
+    }
+
+    public void ResumeTrailAt(Vector3 newEmitterPos)
+    {
+        lastPos = newEmitterPos;
         trailActive = true;
     }
 }
