@@ -123,6 +123,8 @@ public class BikeController : MonoBehaviour
         // Align your up‐axis to the surface normal
         Quaternion goal = Quaternion.FromToRotation(transform.up, upNormal) * rb.rotation;
         rb.MoveRotation(Quaternion.Slerp(rb.rotation, goal, slopeAlignSpeed * Time.fixedDeltaTime));
+
+        AlignVisualToGround();
     }
 
     void DriveAlongSurface(Vector2 input, bool drifting, bool boosting, Vector3 upNormal) {
@@ -151,6 +153,8 @@ public class BikeController : MonoBehaviour
 
             rb.MoveRotation(rb.rotation * Quaternion.AngleAxis(turnAmt, upNormal));
         }
+
+        AlignVisualToGround();
     }
 
     // Whenever we’re touching something, average its contact normals.
