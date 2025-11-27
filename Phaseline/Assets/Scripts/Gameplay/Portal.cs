@@ -1,41 +1,37 @@
+using FishNet;
 using UnityEngine;
 using UnityEngine.AI;
 
 public class Portal : MonoBehaviour
 {
-    public Transform exit;
-    public bool keepForward = true;
+    public Transform exitPoint;
 
-    void OnTriggerEnter(Collider other)
+    private void OnTriggerEnter(Collider other)
     {
-        if (!exit) return;
-        var root = other.attachedRigidbody ? other.attachedRigidbody.transform : other.transform;
-        if (!root || !root.CompareTag("Player")) return;
+        if (!InstanceFinder.IsServerStarted) return;
 
-        // 1) Pause trail so we don't draw a mega segment across space
-        if (root.TryGetComponent<TrailMesh>(out var trail)) trail.PauseTrail();
-
-        // 2) Teleport
-        // 4.6 API: Teleport via the PredictionRigidbody wrapper
-        // This informs the prediction system to "reset" history from this new point
-        var pr = other.GetComponent<FishNet.Object.Prediction.PredictionRigidbody>();
-        
-        if (pr != null)
+        // CASE 1: Player (Prediction)
+        if (other.TryGetComponent(out NetworkBike biker))
         {
-            // Teleport sets position and clears velocity history to prevent "ghost" momentum
-            pr.Teleport(exit.position, exit.rotation); 
+            biker.Teleport(exitPoint.position, exitPoint.rotation);
         }
-
-        // 3) Resume trail at the exit (starts clean at new position)
-        if (trail) trail.ResumeTrailAt(exit.position);
-
-        // 4) Sync NavMesh agent for bots
-        if (root.TryGetComponent<NavMeshAgent>(out var ag))
+        // CASE 2: Bot (NavMesh)
+        else if (other.TryGetComponent(out NavMeshAgent agent))
         {
-            ag.Warp(root.position);
-            // re-issue destination if using BotPathfinder
-            var pf = root.GetComponent<BotPathfinder>();
-            if (pf && pf.target) ag.SetDestination(pf.target.position);
+            // 1. Clear Trail
+            if (other.TryGetComponent(out NetworkTrailMesh trail))
+            {
+                trail.ObserverResetTrail();
+            }
+
+            // 2. Warp NavMesh (Critical! Do not just set transform.position)
+            agent.Warp(exitPoint.position);
+            
+            // 3. Sync Rotation
+            other.transform.rotation = exitPoint.rotation;
+            
+            // Note: NetworkTransform will automatically detect this large jump 
+            // and teleport the visuals on clients if "Enable Teleport" is checked.
         }
     }
 }

@@ -73,6 +73,31 @@ public class NetworkBike : NetworkBehaviour
         }
     }
 
+    public void Teleport(Vector3 position, Quaternion rotation)
+    {
+        // Handle Trail Gap (Pause & Resume)
+        if (TryGetComponent(out NetworkTrailMesh trail))
+        {
+            // Tell the trail we are moving instantly to 'position'
+            // This marks the current spot as a "Cut" and resets the internal counters to 'position'
+            trail.NotifyTeleport(position);
+        }
+
+        // Move the Rigidbody (Physics)
+        _pr.Rigidbody.linearVelocity = Vector3.zero;
+        _pr.Rigidbody.angularVelocity = Vector3.zero;
+        _pr.Rigidbody.position = position;
+        _pr.Rigidbody.rotation = rotation;
+
+        // Force Transform update (Visuals)
+        transform.position = position;
+        transform.rotation = rotation;
+
+        // The OnPostTick() method will automatically 
+        // detect this new position and send a Reconcile packet to all clients,
+        // causing them to snap to this location.
+    }
+
     private BikeInputData BuildInputData()
     {
         return new BikeInputData
