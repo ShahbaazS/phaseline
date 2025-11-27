@@ -16,8 +16,15 @@ public class Portal : MonoBehaviour
         if (root.TryGetComponent<TrailMesh>(out var trail)) trail.PauseTrail();
 
         // 2) Teleport
-        root.position = exit.position;
-        if (keepForward) root.rotation = exit.rotation;
+        // 4.6 API: Teleport via the PredictionRigidbody wrapper
+        // This informs the prediction system to "reset" history from this new point
+        var pr = other.GetComponent<FishNet.Object.Prediction.PredictionRigidbody>();
+        
+        if (pr != null)
+        {
+            // Teleport sets position and clears velocity history to prevent "ghost" momentum
+            pr.Teleport(exit.position, exit.rotation); 
+        }
 
         // 3) Resume trail at the exit (starts clean at new position)
         if (trail) trail.ResumeTrailAt(exit.position);
