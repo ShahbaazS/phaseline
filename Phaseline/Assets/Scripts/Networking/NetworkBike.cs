@@ -1,18 +1,46 @@
-using FishNet;
 using FishNet.Object;
 using FishNet.Object.Prediction;
+using FishNet.Transporting;
 using UnityEngine;
 
+[RequireComponent(typeof(BikeController))]
 [RequireComponent(typeof(PredictionRigidbody))]
-public class NetworkBike : NetworkBehaviour
+public class NetworkBiker : NetworkBehaviour
 {
-    [SerializeField] private BikeController bikeController; // Your existing logic script
-    
+    private BikeController _controller;
     private PredictionRigidbody _pr;
     private PlayerControls _controls;
 
+    // Structs for FishNet 4.6 Prediction V2
+    public struct BikeInputData : IReplicateData
+    {
+        public Vector2 MoveInput;
+        public bool Drift;
+        public bool Jump;
+        public bool Boost;
+        
+        private uint _tick;
+        public void Dispose() { }
+        public uint GetTick() => _tick;
+        public void SetTick(uint value) => _tick = value;
+    }
+
+    public struct BikeReconcileData : IReconcileData
+    {
+        public Vector3 Position;
+        public Quaternion Rotation;
+        public Vector3 Velocity;
+        public Vector3 AngularVelocity;
+
+        private uint _tick;
+        public void Dispose() { }
+        public uint GetTick() => _tick;
+        public void SetTick(uint value) => _tick = value;
+    }
+
     private void Awake()
     {
+        _controller = GetComponent<BikeController>();
         _pr = GetComponent<PredictionRigidbody>();
         _controls = new PlayerControls();
     }
@@ -20,120 +48,93 @@ public class NetworkBike : NetworkBehaviour
     public override void OnStartNetwork()
     {
         base.OnStartNetwork();
-        
-        // 4.6 API: Subscribe to TimeManager for Tick events
-        if (base.TimeManager != null)
+        if (base.IsOwner)
         {
-            base.TimeManager.OnTick += TimeManager_OnTick;
-            base.TimeManager.OnPostTick += TimeManager_OnPostTick;
+            _controls.Enable();
+            TimeManager.OnTick += TimeManager_OnTick;
         }
-        
-        if (base.Owner.IsLocalClient) _controls.Enable();
+        TimeManager.OnPostTick += TimeManager_OnPostTick;
     }
 
     public override void OnStopNetwork()
     {
         base.OnStopNetwork();
-        if (base.TimeManager != null)
-        {
-            base.TimeManager.OnTick -= TimeManager_OnTick;
-            base.TimeManager.OnPostTick -= TimeManager_OnPostTick;
-        }
-        if (base.Owner.IsLocalClient) _controls.Disable();
+        if (_controls != null) _controls.Disable();
+        TimeManager.OnTick -= TimeManager_OnTick;
+        TimeManager.OnPostTick -= TimeManager_OnPostTick;
     }
 
-    // 1. Gather Input (Tick Start)
+    // 1. Gather Input (Client Only)
     private void TimeManager_OnTick()
     {
-        if (base.IsOwner)
+        if (!base.IsOwner) return;
+
+        BikeInputData data = new BikeInputData
         {
-            // 4.6 API: Call Replicate with client-authoritative input
-            Replicate(BuildInputData());
-        }
-        else if (IsServerInitialized)
-        {
-            // Server runs default/empty replicate to keep tick sync if no input arrives
-            Replicate(default);
-        }
-    }
-
-    // 2. Reconcile (Tick End)
-    private void TimeManager_OnPostTick()
-    {
-        // Only the Server sends reconciliation data
-        if (IsServerInitialized)
-        {
-            BikeReconcileData state = new BikeReconcileData(
-                transform.position, 
-                transform.rotation, 
-                _pr.Rigidbody.linearVelocity, // Unity 6 (was velocity)
-                _pr.Rigidbody.angularVelocity
-            );
-            Reconcile(state);
-        }
-    }
-
-    public void Teleport(Vector3 position, Quaternion rotation)
-    {
-        // Handle Trail Gap (Pause & Resume)
-        if (TryGetComponent(out NetworkTrailMesh trail))
-        {
-            // Tell the trail we are moving instantly to 'position'
-            // This marks the current spot as a "Cut" and resets the internal counters to 'position'
-            trail.NotifyTeleport(position);
-        }
-
-        // Move the Rigidbody (Physics)
-        _pr.Rigidbody.linearVelocity = Vector3.zero;
-        _pr.Rigidbody.angularVelocity = Vector3.zero;
-        _pr.Rigidbody.position = position;
-        _pr.Rigidbody.rotation = rotation;
-
-        // Force Transform update (Visuals)
-        transform.position = position;
-        transform.rotation = rotation;
-
-        // The OnPostTick() method will automatically 
-        // detect this new position and send a Reconcile packet to all clients,
-        // causing them to snap to this location.
-    }
-
-    private BikeInputData BuildInputData()
-    {
-        return new BikeInputData
-        {
-            Move = _controls.Gameplay.Move.ReadValue<Vector2>(),
+            MoveInput = _controls.Gameplay.Move.ReadValue<Vector2>(),
             Drift = _controls.Gameplay.Drift.IsPressed(),
             Boost = _controls.Gameplay.Boost.IsPressed(),
-            Jump = _controls.Gameplay.Jump.IsPressed()
+            Jump = _controls.Gameplay.Jump.WasPressedThisFrame() 
         };
+
+        Replicate(data);
     }
 
-    // 3. The Prediction Logic (Runs on both Client & Server)
+    // 2. Run Logic (Client & Server)
     [Replicate]
-    private void Replicate(BikeInputData input, ReplicateState state = ReplicateState.Invalid)
+    private void Replicate(BikeInputData data, ReplicateState state = ReplicateState.Invalid, Channel channel = Channel.Unreliable)
     {
+        // Use TimeManager.TickDelta (fixed time step for prediction)
         float dt = (float)base.TimeManager.TickDelta;
-
-        // IMPORTANT: Modify your BikeController.Move to accept PredictionRigidbody
-        // so it applies forces to the PR, not the standard Rigidbody.
-        // Alternatively, apply forces here directly:
-        
-        // Example logic (simplified):
-        Vector3 force = transform.forward * input.Move.y * 50f;
-        _pr.AddForce(force); // 4.6 API: Use _pr wrapper, not rb directly!
-        
-        // If you rely on BikeController logic, pass _pr to it:
-        // bikeController.Move(input, _pr, dt); 
+        _controller.Move(data.MoveInput, data.Drift, data.Boost, data.Jump, dt);
     }
 
-    [Reconcile]
-    private void Reconcile(BikeReconcileData data)
+    // 3. Create Snapshot (Server Only)
+    private void TimeManager_OnPostTick()
     {
-        // 4.6 API: Hard reset the physics state
+        if (!base.IsServer) return;
+
+        BikeReconcileData data = new BikeReconcileData
+        {
+            Position = transform.position,
+            Rotation = transform.rotation,
+            Velocity = _pr.Rigidbody.linearVelocity,
+            AngularVelocity = _pr.Rigidbody.angularVelocity
+        };
+
+        Reconcile(data);
+    }
+
+    // 4. Correct Mistakes (Client Only)
+    [Reconcile]
+    private void Reconcile(BikeReconcileData data, Channel channel = Channel.Unreliable)
+    {
         transform.position = data.Position;
         transform.rotation = data.Rotation;
-        _pr.Velocity(data.Velocity);
-        _pr.AngularVelocity(data.AngularVelocity);
+        _pr.Rigidbody.linearVelocity = data.Velocity;
+        _pr.Rigidbody.angularVelocity = data.AngularVelocity;
+    }
+
+    // API for Portals/Teleports
+    public void Teleport(Vector3 pos, Quaternion rot)
+    {
+        // In FishNet V2 PredictionRigidbody, manual moves often require alerting the system 
+        // or effectively "snapping" via a Server RPC that forces a Reconcile.
+        // For simplicity in a Replicate method, we act directly, but usually, 
+        // we want to ensure this happens during the tick processing.
+        
+        transform.position = pos;
+        transform.rotation = rot;
+        _pr.Rigidbody.position = pos;
+        _pr.Rigidbody.rotation = rot;
+        
+        // Clear velocity to prevent "shooting" out of the portal with old momentum
+        _pr.Rigidbody.linearVelocity = transform.forward * _pr.Rigidbody.linearVelocity.magnitude; 
+        
+        // Notify Trail System of the gap
+        if (TryGetComponent<NetworkTrailMesh>(out var trail))
+        {
+            trail.NotifyTeleport(pos);
+        }
     }
 }

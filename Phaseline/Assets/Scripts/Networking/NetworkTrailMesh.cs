@@ -1,204 +1,158 @@
 using FishNet.Object;
-using FishNet.Object.Synchronizing;
 using System.Collections.Generic;
 using UnityEngine;
-using UnityEngine.Pool;
 
 public class NetworkTrailMesh : NetworkBehaviour
 {
     [Header("Settings")]
     [SerializeField] private float segmentLength = 0.5f;
-    [SerializeField] private float trailHeight = 1.5f;
-    [SerializeField] private float trailWidth = 0.2f;
-    [SerializeField] private int maxSegments = 150;
+    [SerializeField] private float height = 1.2f;
+    [SerializeField] private GameObject trailSegmentPrefab; // The TrailSegment.cs prefab
+    [SerializeField] private Transform trailEmitter;
+    [SerializeField] private Material trailMaterial;
 
-    [Header("References")]
-    [SerializeField] private Transform trailEmitter; // The back wheel transform
-    [SerializeField] private MeshFilter meshFilter;
-    [SerializeField] private NetworkObject wallSegmentPrefab; // The invisible collider prefab
-
-    // Data Structure for a single point in the trail
-    struct TrailPoint
+    private struct TrailPoint
     {
         public Vector3 Center;
         public Quaternion Rotation;
-        public bool IsJump; // If true, this point is the start of a new line (gap)
+        public Vector3 LeftTop, LeftBot, RightTop, RightBot;
+        public bool IsJump; // The "Gap" flag
     }
 
-    private LinkedList<TrailPoint> points = new LinkedList<TrailPoint>();
-    private Vector3 lastSpawnPosition;
-    private Mesh mesh;
-    private bool isSpawning = false;
-
-    // Object Pooling for Mesh Generation (Reduces Garbage Collection)
-    private List<Vector3> verts = new List<Vector3>();
-    private List<int> tris = new List<int>();
-    private List<Vector2> uvs = new List<Vector2>();
+    private LinkedList<TrailPoint> _points = new LinkedList<TrailPoint>();
+    private Mesh _mesh;
+    private MeshRenderer _mr;
+    private MeshFilter _mf;
+    private Vector3 _lastPos;
 
     private void Awake()
     {
-        mesh = new Mesh();
-        meshFilter.mesh = mesh;
+        _mesh = new Mesh();
+        GameObject meshObj = new GameObject("TrailVisuals");
+        _mf = meshObj.AddComponent<MeshFilter>();
+        _mr = meshObj.AddComponent<MeshRenderer>();
+        _mr.material = trailMaterial;
+        _mf.mesh = _mesh;
     }
 
     public override void OnStartNetwork()
     {
         base.OnStartNetwork();
-        // Start spawning only when the network starts
-        if (trailEmitter != null)
-        {
-            lastSpawnPosition = trailEmitter.position;
-            isSpawning = true;
-            
-            // Add initial point
-            AddPoint(trailEmitter.position, trailEmitter.rotation, false);
-        }
+        _lastPos = trailEmitter.position;
     }
 
     private void FixedUpdate()
     {
-        if (!isSpawning || trailEmitter == null) return;
-
-        // 1. Check distance moved
-        if (Vector3.Distance(lastSpawnPosition, trailEmitter.position) > segmentLength)
+        // Generate trail based on movement
+        float dist = Vector3.Distance(trailEmitter.position, _lastPos);
+        
+        if (dist >= segmentLength)
         {
-            // 2. Add Visual Point (Client & Server)
-            AddPoint(trailEmitter.position, trailEmitter.rotation, false);
+            AddPoint(false);
             
-            // 3. Spawn Physical Wall (Server Only)
-            if (IsServer)
+            // If Server, spawn the physical collider
+            if (base.IsServer)
             {
-                SpawnWallCollider(lastSpawnPosition, trailEmitter.position);
+                SpawnColliderSegment(_lastPos, trailEmitter.position);
             }
 
-            lastSpawnPosition = trailEmitter.position;
+            _lastPos = trailEmitter.position;
         }
     }
 
-    // --- Public API called by NetworkBike ---
-
-    public void NotifyTeleport(Vector3 newPosition)
+    public void NotifyTeleport(Vector3 newPos)
     {
-        // 1. Finish the current line at the OLD position
-        AddPoint(trailEmitter.position, trailEmitter.rotation, true); 
-
-        // 2. Reset our tracking to the NEW position
-        lastSpawnPosition = newPosition;
+        // 1. Cap off the current line at the old position
+        AddPoint(true); // IsJump = true means "Don't connect to next"
         
-        // The next FixedUpdate will see a large distance, but since we updated
-        // lastSpawnPosition, it will start a fresh segment from the new spot.
+        // 2. Reset tracking
+        _lastPos = newPos;
     }
 
-    public void ResetTrail()
+    private void AddPoint(bool isJump)
     {
-        points.Clear();
-        mesh.Clear();
-        lastSpawnPosition = trailEmitter.position;
-    }
+        Vector3 pos = trailEmitter.position;
+        Quaternion rot = trailEmitter.rotation;
+        Vector3 right = rot * Vector3.right * 0.5f; // half width (approx 1m wide)
+        Vector3 up = Vector3.up * height;
 
-    // --- Internal Logic ---
-
-    private void AddPoint(Vector3 pos, Quaternion rot, bool isJump)
-    {
-        var p = new TrailPoint
+        TrailPoint p = new TrailPoint
         {
             Center = pos,
             Rotation = rot,
+            LeftBot = pos - right,
+            RightBot = pos + right,
+            LeftTop = pos - right + up,
+            RightTop = pos + right + up,
             IsJump = isJump
         };
 
-        points.AddLast(p);
+        _points.AddLast(p);
+        if (_points.Count > 200) _points.RemoveFirst();
 
-        // Keep list size in check
-        if (points.Count > maxSegments)
-        {
-            points.RemoveFirst();
-        }
-
-        UpdateMesh();
+        RebuildMesh();
     }
 
-    private void UpdateMesh()
+    private void SpawnColliderSegment(Vector3 start, Vector3 end)
     {
-        if (points.Count < 2) return;
+        Vector3 center = (start + end) * 0.5f + Vector3.up * (height * 0.5f);
+        Quaternion rot = Quaternion.LookRotation((end - start).normalized, Vector3.up);
+        
+        // Instantiate via FishNet
+        GameObject go = Instantiate(trailSegmentPrefab, center, rot);
+        
+        // Set scale length
+        float len = Vector3.Distance(start, end);
+        go.transform.localScale = new Vector3(1f, height, len); // Adjust width as needed
 
-        verts.Clear();
-        tris.Clear();
-        uvs.Clear();
+        Spawn(go, base.Owner); // Give ownership to this biker (optional)
+    }
 
-        var node = points.First;
-        int vertIndex = 0;
+    private void RebuildMesh()
+    {
+        if (_points.Count < 2) return;
 
-        // Iterate through linked list pairs
-        while (node != null && node.Next != null)
+        List<Vector3> verts = new List<Vector3>();
+        List<int> tris = new List<int>();
+
+        var node = _points.First;
+        while (node.Next != null)
         {
-            TrailPoint pA = node.Value;
-            TrailPoint pB = node.Next.Value;
+            var p1 = node.Value;
+            var p2 = node.Next.Value;
 
-            // CRITICAL: If 'pA' was a jump point, do NOT connect it to 'pB'
-            if (pA.IsJump)
+            // If p1 was a jump, we DO NOT connect it to p2
+            if (!p1.IsJump)
             {
-                node = node.Next;
-                continue;
+                int baseIdx = verts.Count;
+
+                // Add vertices
+                verts.Add(p1.LeftBot); verts.Add(p1.LeftTop);
+                verts.Add(p1.RightBot); verts.Add(p1.RightTop);
+                verts.Add(p2.LeftBot); verts.Add(p2.LeftTop);
+                verts.Add(p2.RightBot); verts.Add(p2.RightTop);
+
+                // Add Quads (Logic simplified for brevity, similar to original TrailMesh)
+                // Left Side
+                AddQuad(tris, baseIdx + 0, baseIdx + 1, baseIdx + 5, baseIdx + 4);
+                // Right Side
+                AddQuad(tris, baseIdx + 3, baseIdx + 2, baseIdx + 6, baseIdx + 7);
+                // Top
+                AddQuad(tris, baseIdx + 1, baseIdx + 3, baseIdx + 7, baseIdx + 5);
             }
 
-            // Calculate Quad Vertices
-            Vector3 up = Vector3.up * trailHeight;
-            
-            // We use the rotation to find the "thickness" direction if desired, 
-            // but for a Tron wall, a simple vertical sheet usually works best.
-            
-            Vector3 pA_Bottom = pA.Center;
-            Vector3 pA_Top = pA.Center + up;
-            Vector3 pB_Bottom = pB.Center;
-            Vector3 pB_Top = pB.Center + up;
-
-            verts.Add(pA_Bottom); // 0
-            verts.Add(pA_Top);    // 1
-            verts.Add(pB_Bottom); // 2
-            verts.Add(pB_Top);    // 3
-
-            // UVs
-            uvs.Add(new Vector2(0, 0));
-            uvs.Add(new Vector2(0, 1));
-            uvs.Add(new Vector2(1, 0));
-            uvs.Add(new Vector2(1, 1));
-
-            // Triangles (Double Sided)
-            tris.Add(vertIndex + 0); tris.Add(vertIndex + 1); tris.Add(vertIndex + 2);
-            tris.Add(vertIndex + 2); tris.Add(vertIndex + 1); tris.Add(vertIndex + 3);
-            
-            tris.Add(vertIndex + 0); tris.Add(vertIndex + 2); tris.Add(vertIndex + 1);
-            tris.Add(vertIndex + 2); tris.Add(vertIndex + 3); tris.Add(vertIndex + 1);
-
-            vertIndex += 4;
             node = node.Next;
         }
 
-        mesh.SetVertices(verts);
-        mesh.SetTriangles(tris, 0);
-        mesh.SetUVs(0, uvs);
-        mesh.RecalculateNormals();
-        mesh.RecalculateBounds();
+        _mesh.Clear();
+        _mesh.SetVertices(verts);
+        _mesh.SetTriangles(tris, 0);
+        _mesh.RecalculateNormals();
     }
 
-    private void SpawnWallCollider(Vector3 start, Vector3 end)
+    private void AddQuad(List<int> tris, int a, int b, int c, int d)
     {
-        // FishNet Spawning Logic
-        Vector3 center = (start + end) / 2;
-        center.y += trailHeight / 2; // Raise center to match height
-        
-        Quaternion rot = Quaternion.LookRotation(end - start);
-        float length = Vector3.Distance(start, end);
-
-        // Retrieve from Pool (Recommended) or Instantiate
-        NetworkObject wall = Instantiate(wallSegmentPrefab, center, rot);
-        wall.transform.localScale = new Vector3(trailWidth, trailHeight, length);
-        
-        // Spawn on network
-        InstanceFinder.ServerManager.Spawn(wall);
-        
-        // Set Owner so we don't kill ourselves (Optional, if Wall has logic)
-        // wall.GetComponent<TrailCollision>().OwnerId = OwnerId;
+        tris.Add(a); tris.Add(b); tris.Add(c);
+        tris.Add(c); tris.Add(d); tris.Add(a);
     }
 }
