@@ -17,4 +17,11 @@ public class Damageable : MonoBehaviour
     {
         IsDead = false;
     }
+
+    // Added to satisfy TrailSegment collision calls
+    public void TakeDamage(int amount)
+    {
+        // For a lightcycle, any damage is usually fatal
+        if (amount > 0) Die();
+    }
 }

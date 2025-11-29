@@ -178,7 +178,7 @@ public class BotController : MonoBehaviour
     {
         turn = Mathf.Clamp(turn, -1f, 1f);
         if (Mathf.Abs(turn) > 0.05f) lastTurnSign = Mathf.Sign(turn);
-        bike.Move(new Vector2(turn, Mathf.Clamp01(throttle)), drift, false, false);
+        bike.Move(new Vector2(turn, Mathf.Clamp01(throttle)), drift, false, false, Time.fixedDeltaTime);
     }
 
     // -------------------- PROBES --------------------

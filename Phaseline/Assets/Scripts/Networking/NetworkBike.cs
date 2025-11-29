@@ -4,9 +4,10 @@ using FishNet.Transporting;
 using UnityEngine;
 
 [RequireComponent(typeof(BikeController))]
-[RequireComponent(typeof(PredictionRigidbody))]
-public class NetworkBiker : NetworkBehaviour
+public class NetworkBike : NetworkBehaviour
 {
+    [Header("Input Settings")]
+    [Range(0f, 1f)] public float minThrottle = 0.6f;
     private BikeController _controller;
     private PredictionRigidbody _pr;
     private PlayerControls _controls;
@@ -41,19 +42,40 @@ public class NetworkBiker : NetworkBehaviour
     private void Awake()
     {
         _controller = GetComponent<BikeController>();
-        _pr = GetComponent<PredictionRigidbody>();
+        _pr = new PredictionRigidbody();
+        _pr.Initialize(GetComponent<Rigidbody>());
         _controls = new PlayerControls();
     }
 
     public override void OnStartNetwork()
     {
         base.OnStartNetwork();
-        if (base.IsOwner)
+        
+        // Check if this bike belongs to the local player
+        if (base.Owner.IsLocalClient)
         {
+            // Enable Inputs
             _controls.Enable();
             TimeManager.OnTick += TimeManager_OnTick;
+
+            // --- CAMERA ASSIGNMENT ---
+            // Find the main camera and set its target to this bike
+            var cam = Camera.main?.GetComponent<FollowCamera>();
+            if (cam != null)
+            {
+                cam.target = transform;
+            }
+            else
+            {
+                Debug.LogWarning("[NetworkBike] FollowCamera not found on MainCamera!");
+            }
         }
-        TimeManager.OnPostTick += TimeManager_OnPostTick;
+
+        // Server-side logic for prediction
+        if (base.IsServerInitialized)
+        {
+            TimeManager.OnPostTick += TimeManager_OnPostTick;
+        }
     }
 
     public override void OnStopNetwork()
@@ -69,9 +91,19 @@ public class NetworkBiker : NetworkBehaviour
     {
         if (!base.IsOwner) return;
 
+        // Read Raw Input
+        Vector2 rawInput = _controls.Gameplay.Move.ReadValue<Vector2>();
+
+        // Apply Auto-Throttle Logic
+        // Ignore 'S' (reverse) by clamping 0..1, then ensure we never go below minThrottle
+        float throttle = Mathf.Clamp01(rawInput.y);
+        throttle = Mathf.Max(throttle, minThrottle);
+
+        // Create the Input Data
         BikeInputData data = new BikeInputData
         {
-            MoveInput = _controls.Gameplay.Move.ReadValue<Vector2>(),
+            // Pass the processed throttle (x = steer, y = throttle)
+            MoveInput = new Vector2(rawInput.x, throttle),
             Drift = _controls.Gameplay.Drift.IsPressed(),
             Boost = _controls.Gameplay.Boost.IsPressed(),
             Jump = _controls.Gameplay.Jump.WasPressedThisFrame() 
@@ -79,7 +111,6 @@ public class NetworkBiker : NetworkBehaviour
 
         Replicate(data);
     }
-
     // 2. Run Logic (Client & Server)
     [Replicate]
     private void Replicate(BikeInputData data, ReplicateState state = ReplicateState.Invalid, Channel channel = Channel.Unreliable)
@@ -89,11 +120,20 @@ public class NetworkBiker : NetworkBehaviour
         _controller.Move(data.MoveInput, data.Drift, data.Boost, data.Jump, dt);
     }
 
-    // 3. Create Snapshot (Server Only)
+    // 3. Trigger Reconcile Creation (Server Only)
     private void TimeManager_OnPostTick()
     {
-        if (!base.IsServer) return;
+        // Only the server needs to create reconciliation data to send to clients
+        if (base.IsServerInitialized)
+        {
+            CreateReconcile();
+        }
+    }
 
+    // 4. Create Snapshot (Override - Parameterless)
+    // FIX: Removed arguments to match FishNet V2 base method signature
+    public override void CreateReconcile()
+    {
         BikeReconcileData data = new BikeReconcileData
         {
             Position = transform.position,
@@ -105,7 +145,7 @@ public class NetworkBiker : NetworkBehaviour
         Reconcile(data);
     }
 
-    // 4. Correct Mistakes (Client Only)
+    // 5. Correct Mistakes (Client Only)
     [Reconcile]
     private void Reconcile(BikeReconcileData data, Channel channel = Channel.Unreliable)
     {
@@ -118,23 +158,24 @@ public class NetworkBiker : NetworkBehaviour
     // API for Portals/Teleports
     public void Teleport(Vector3 pos, Quaternion rot)
     {
-        // In FishNet V2 PredictionRigidbody, manual moves often require alerting the system 
-        // or effectively "snapping" via a Server RPC that forces a Reconcile.
-        // For simplicity in a Replicate method, we act directly, but usually, 
-        // we want to ensure this happens during the tick processing.
-        
+        // 1. Cap the old trail at the CURRENT position (Before Move)
+        if (TryGetComponent<NetworkTrailMesh>(out var trail))
+        {
+            trail.NotifyTeleportStart();
+        }
+
+        // 2. Perform the Move
         transform.position = pos;
         transform.rotation = rot;
         _pr.Rigidbody.position = pos;
         _pr.Rigidbody.rotation = rot;
-        
-        // Clear velocity to prevent "shooting" out of the portal with old momentum
-        _pr.Rigidbody.linearVelocity = transform.forward * _pr.Rigidbody.linearVelocity.magnitude; 
-        
-        // Notify Trail System of the gap
-        if (TryGetComponent<NetworkTrailMesh>(out var trail))
+        _pr.Rigidbody.linearVelocity = Vector3.zero; 
+        _pr.Rigidbody.angularVelocity = Vector3.zero;
+
+        // 3. Start new trail segment at the NEW position (After Move)
+        if (trail)
         {
-            trail.NotifyTeleport(pos);
+            trail.NotifyTeleportEnd(pos);
         }
     }
 }

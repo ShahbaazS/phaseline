@@ -15,12 +15,12 @@ public class TrailSegment : NetworkBehaviour
 
     void Despawn()
     {
-        if (base.IsServer) base.Despawn();
+        if (base.IsServerInitialized) base.Despawn();
     }
 
     private void OnTriggerEnter(Collider other)
     {
-        if (!base.IsServer) return;
+        if (!base.IsServerInitialized) return;
 
         // Ensure we don't kill the person who laid the trail (if overlapping initially)
         // or check collision logic layers.
@@ -28,7 +28,7 @@ public class TrailSegment : NetworkBehaviour
         if (other.TryGetComponent<Damageable>(out var hp))
         {
             // Optional: check ownership via base.OwnerId vs other NetworkObject
-            // if (base.OwnerId == other.GetComponent<NetworkObject>().OwnerId) return;
+            if (base.OwnerId == other.GetComponent<NetworkObject>().OwnerId) return;
             
             hp.TakeDamage(100);
         }

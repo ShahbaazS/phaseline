@@ -28,17 +28,37 @@ public class BikeController : MonoBehaviour
 
     [Header("Visual Settings")]
     [SerializeField] private Transform visualModel;
+    [SerializeField] private float maxBankingAngle = 90f;
+    [SerializeField] private float visualBankingSpeed = 15f;
+    [SerializeField] private TrailRenderer driftTrail;
+    [SerializeField] private Transform frontWheelTransform;
+    [SerializeField] private Transform rearWheelTransform;
+    [SerializeField] private float wheelRotSpeed = 1000f;
+    [SerializeField] private ParticleSystem sparksEffect;
+    private float driftTrailWidth = 0.5f;
+    private float driftTrailVelocity = 10f;
+
+    // Audio removed for brevity/network safety, or can be re-added if client-side only.
 
     private Rigidbody rb;
     private Vector3 currentSurfaceNormal = Vector3.up;
 
-    private void Awake()
+    public void Awake()
     {
         rb = GetComponent<Rigidbody>();
         var col = GetComponent<Collider>();
         groundRayLength = col.bounds.extents.y + groundOffset;
+        
+        if (driftTrail)
+        {
+            driftTrailWidth = driftTrail.startWidth;
+            driftTrail.emitting = false;
+        }
     }
 
+    /// <summary>
+    /// Pure physics step. Pass in 'dt' (delta time) explicitly.
+    /// </summary>
     public void Move(Vector2 input, bool drifting, bool boosting, bool jumping, float dt)
     {
         // Raycast out to the stick threshold
@@ -58,11 +78,13 @@ public class BikeController : MonoBehaviour
             if (grounded && jumping)
             {
                 rb.AddForce(currentSurfaceNormal * jumpForce, ForceMode.Impulse);
-                return;
+                // No return here, allowing visuals to update even on jump frame
             }
-
-            // Magnetic gravity
-            rb.AddForce(-currentSurfaceNormal * stickForce, ForceMode.Acceleration);
+            else
+            {
+                // Magnetic gravity
+                rb.AddForce(-currentSurfaceNormal * stickForce, ForceMode.Acceleration);
+            }
 
             if (grounded)
             {
@@ -76,6 +98,12 @@ public class BikeController : MonoBehaviour
             rb.AddForce(Physics.gravity, ForceMode.Acceleration);
             StabilizeAndAlign(Vector3.up, dt);
         }
+
+        // Handle Visuals
+        VisualBank(input.x, dt);
+        UpdateWheelRotation(dt);
+        DriftTrailEffect(drifting);
+        Sparks();
     }
 
     void StabilizeAndAlign(Vector3 upNormal, float dt)
@@ -92,7 +120,7 @@ public class BikeController : MonoBehaviour
     void DriveAlongSurface(Vector2 input, bool drifting, bool boosting, Vector3 upNormal, float dt)
     {
         Vector3 forwardDir = Vector3.ProjectOnPlane(transform.forward, upNormal).normalized;
-        float targetSpeed = maxSpeed * input.y; // Boosting logic can be added here
+        float targetSpeed = maxSpeed * input.y;
         Vector3 forwardVel = forwardDir * targetSpeed;
         
         Vector3 deltaVel = forwardVel - Vector3.Project(rb.linearVelocity, forwardDir);
@@ -109,22 +137,6 @@ public class BikeController : MonoBehaviour
             float turnAmt = input.x * turnStrength * turnCurve.Evaluate(speedPct) * dt;
             rb.MoveRotation(rb.rotation * Quaternion.AngleAxis(turnAmt, upNormal));
         }
-
-        AlignVisualToGround(dt);
-    }
-
-    // Whenever we’re touching something, average its contact normals.
-    void OnCollisionStay(Collision col)
-    {
-        Vector3 sum = Vector3.zero;
-        foreach (var c in col.contacts) sum += c.normal;
-        currentSurfaceNormal = (sum / col.contactCount).normalized;
-    }
-
-    // If we leave all surfaces, default back to world-down.
-    void OnCollisionExit(Collision col)
-    {
-        currentSurfaceNormal = Vector3.up;
     }
 
     public void AlignVisualToGround(float dt)
@@ -137,19 +149,68 @@ public class BikeController : MonoBehaviour
         }
     }
 
-    public void VisualBank(float turnInput)
+    // --- Visuals Restored ---
+
+    void VisualBank(float turnInput, float dt)
     {
         if (!visualModel || !rb) return;
-
         float currentVelocityOffset = rb.linearVelocity.magnitude / maxSpeed;
         float targetBank = -turnInput * maxBankingAngle * currentVelocityOffset;
 
-        Quaternion targetRotation = Quaternion.Euler(visualModel.localRotation.x, visualModel.localRotation.y, targetBank);
-        visualModel.localRotation = Quaternion.Slerp(
-            visualModel.localRotation,
-            targetRotation,
-            Time.deltaTime * visualBankingSpeed
-        );
+        // Convert local rotation manipulation to be safe with the new AlignVisualToGround logic
+        // We apply banking to the local Z axis relative to the visual model's parent
+        Quaternion targetRotation = Quaternion.Euler(visualModel.localEulerAngles.x, visualModel.localEulerAngles.y, targetBank);
+        visualModel.localRotation = Quaternion.Slerp(visualModel.localRotation, targetRotation, dt * visualBankingSpeed);
     }
 
+    void UpdateWheelRotation(float dt)
+    {
+        float currentVelocityOffset = rb.linearVelocity.magnitude / maxSpeed;
+        float wheelRotation = currentVelocityOffset * wheelRotSpeed * dt;
+        Vector3 right = Vector3.Cross(transform.up, transform.forward).normalized;
+
+        if (frontWheelTransform != null) frontWheelTransform.Rotate(right, wheelRotation, Space.Self);
+        if (rearWheelTransform != null) rearWheelTransform.Rotate(right, wheelRotation, Space.Self);
+    }
+
+    void DriftTrailEffect(bool driftInput)
+    {
+        if (!driftTrail) return;
+        if (driftInput && rb.linearVelocity.magnitude > driftTrailVelocity)
+        {
+            float currentVelocityOffset = rb.linearVelocity.magnitude / maxSpeed;
+            driftTrail.startWidth = Mathf.Lerp(driftTrailWidth, driftTrailWidth * 2f, currentVelocityOffset);
+            driftTrail.emitting = true;
+        }
+        else
+        {
+            driftTrail.startWidth = driftTrailWidth;
+            driftTrail.emitting = false;
+        }
+    }
+
+    void Sparks()
+    {
+        if (!sparksEffect) return;
+        if (rb.linearVelocity.magnitude > 5f && Physics.Raycast(transform.position, -transform.up, groundRayLength * 1.2f, groundLayer))
+        {
+            if (!sparksEffect.isPlaying) sparksEffect.Play();
+        }
+        else
+        {
+            if (sparksEffect.isPlaying) sparksEffect.Stop();
+        }
+    }
+
+    void OnCollisionStay(Collision col)
+    {
+        Vector3 sum = Vector3.zero;
+        foreach (var c in col.contacts) sum += c.normal;
+        if (col.contactCount > 0) currentSurfaceNormal = (sum / col.contactCount).normalized;
+    }
+
+    void OnCollisionExit(Collision col)
+    {
+        currentSurfaceNormal = Vector3.up;
+    }
 }

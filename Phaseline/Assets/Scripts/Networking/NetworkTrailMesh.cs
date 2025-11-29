@@ -4,19 +4,23 @@ using UnityEngine;
 
 public class NetworkTrailMesh : NetworkBehaviour
 {
+    [Header("Anchors (Assign from Bike Model)")]
+    [SerializeField] private Transform leftBottom;
+    [SerializeField] private Transform leftTop;
+    [SerializeField] private Transform rightBottom;
+    [SerializeField] private Transform rightTop;
+
     [Header("Settings")]
     [SerializeField] private float segmentLength = 0.5f;
     [SerializeField] private float height = 1.2f;
-    [SerializeField] private GameObject trailSegmentPrefab; // The TrailSegment.cs prefab
-    [SerializeField] private Transform trailEmitter;
+    [SerializeField] private GameObject trailSegmentPrefab; 
+    [SerializeField] private Transform trailEmitter; 
     [SerializeField] private Material trailMaterial;
 
     private struct TrailPoint
     {
-        public Vector3 Center;
-        public Quaternion Rotation;
         public Vector3 LeftTop, LeftBot, RightTop, RightBot;
-        public bool IsJump; // The "Gap" flag
+        public bool IsJump; 
     }
 
     private LinkedList<TrailPoint> _points = new LinkedList<TrailPoint>();
@@ -24,13 +28,19 @@ public class NetworkTrailMesh : NetworkBehaviour
     private MeshRenderer _mr;
     private MeshFilter _mf;
     private Vector3 _lastPos;
+    private GameObject _visualsObj; 
+    public bool trailActive = true;
+    private List<GameObject> _spawnedSegments = new List<GameObject>();
 
     private void Awake()
     {
         _mesh = new Mesh();
-        GameObject meshObj = new GameObject("TrailVisuals");
-        _mf = meshObj.AddComponent<MeshFilter>();
-        _mr = meshObj.AddComponent<MeshRenderer>();
+        _visualsObj = new GameObject("TrailVisuals");
+        _visualsObj.transform.SetParent(transform); 
+        _visualsObj.transform.localPosition = Vector3.zero;
+        
+        _mf = _visualsObj.AddComponent<MeshFilter>();
+        _mr = _visualsObj.AddComponent<MeshRenderer>();
         _mr.material = trailMaterial;
         _mf.mesh = _mesh;
     }
@@ -38,58 +48,118 @@ public class NetworkTrailMesh : NetworkBehaviour
     public override void OnStartNetwork()
     {
         base.OnStartNetwork();
-        _lastPos = trailEmitter.position;
+        if (trailEmitter) _lastPos = trailEmitter.position;
+
+        if (_visualsObj)
+        {
+            _visualsObj.transform.SetParent(null);
+            _visualsObj.transform.position = Vector3.zero;
+            _visualsObj.transform.rotation = Quaternion.identity;
+            _visualsObj.transform.localScale = Vector3.one;
+            _visualsObj.SetActive(true);
+        }
+
+        var colorizer = GetComponentInParent<BikeRandomColor>();
+        if (colorizer) colorizer.ApplyToRenderer(_mr);
     }
+
+    public override void OnStopNetwork()
+    {
+        base.OnStopNetwork();
+        if (_visualsObj)
+        {
+            _visualsObj.transform.SetParent(transform);
+            _visualsObj.SetActive(false);
+        }
+        ClearTrail();
+    }
+
+    private void OnDestroy() { if (_visualsObj) Destroy(_visualsObj); }
 
     private void FixedUpdate()
     {
-        // Generate trail based on movement
+        if (!trailActive || !trailEmitter) return;
+
         float dist = Vector3.Distance(trailEmitter.position, _lastPos);
-        
         if (dist >= segmentLength)
         {
-            AddPoint(false);
+            AddPoint(false); // Add normal segment point
             
-            // If Server, spawn the physical collider
-            if (base.IsServer)
-            {
+            if (base.IsServerInitialized)
                 SpawnColliderSegment(_lastPos, trailEmitter.position);
-            }
 
             _lastPos = trailEmitter.position;
         }
     }
 
-    public void NotifyTeleport(Vector3 newPos)
+    // --- API ---
+
+    // Called BEFORE transform moves (Caps the old line)
+    public void NotifyTeleportStart()
     {
-        // 1. Cap off the current line at the old position
-        AddPoint(true); // IsJump = true means "Don't connect to next"
-        
-        // 2. Reset tracking
-        _lastPos = newPos;
+        AddPoint(true); // IsJump=true ends the current mesh strip
     }
+
+    // Called AFTER transform moves (Starts the new line)
+    public void NotifyTeleportEnd(Vector3 newPos)
+    {
+        _lastPos = newPos;
+        AddPoint(false); // Start new strip immediately at new pos
+    }
+
+    // Legacy support if needed
+    public void NotifyTeleport(Vector3 newPos) => NotifyTeleportEnd(newPos);
+
+    public void PauseTrail() => trailActive = false;
+
+    public void ResumeTrail()
+    {
+        trailActive = true;
+        if (trailEmitter)
+        {
+            _lastPos = trailEmitter.position;
+            AddPoint(false); // FIX: Anchor the trail immediately to fill the start gap
+        }
+    }
+    
+    public void ResumeTrailAt(Vector3 pos)
+    {
+        trailActive = true;
+        _lastPos = pos;
+        // Assume transform is already at pos, so AddPoint captures correct anchors
+        AddPoint(false); 
+    }
+
+    public void ClearTrail()
+    {
+        trailActive = false;
+        _points.Clear();
+        _mesh.Clear();
+        
+        if (base.IsServerInitialized)
+        {
+            foreach (var go in _spawnedSegments) { if (go != null) base.Despawn(go); }
+            _spawnedSegments.Clear();
+        }
+        
+        if (trailEmitter) _lastPos = trailEmitter.position;
+    }
+
+    // --- Internal Logic ---
 
     private void AddPoint(bool isJump)
     {
-        Vector3 pos = trailEmitter.position;
-        Quaternion rot = trailEmitter.rotation;
-        Vector3 right = rot * Vector3.right * 0.5f; // half width (approx 1m wide)
-        Vector3 up = Vector3.up * height;
-
         TrailPoint p = new TrailPoint
         {
-            Center = pos,
-            Rotation = rot,
-            LeftBot = pos - right,
-            RightBot = pos + right,
-            LeftTop = pos - right + up,
-            RightTop = pos + right + up,
+            LeftBot = leftBottom.position,
+            LeftTop = leftTop.position,
+            RightBot = rightBottom.position,
+            RightTop = rightTop.position,
             IsJump = isJump
         };
 
         _points.AddLast(p);
         if (_points.Count > 200) _points.RemoveFirst();
-
         RebuildMesh();
     }
 
@@ -97,15 +167,10 @@ public class NetworkTrailMesh : NetworkBehaviour
     {
         Vector3 center = (start + end) * 0.5f + Vector3.up * (height * 0.5f);
         Quaternion rot = Quaternion.LookRotation((end - start).normalized, Vector3.up);
-        
-        // Instantiate via FishNet
         GameObject go = Instantiate(trailSegmentPrefab, center, rot);
-        
-        // Set scale length
-        float len = Vector3.Distance(start, end);
-        go.transform.localScale = new Vector3(1f, height, len); // Adjust width as needed
-
-        Spawn(go, base.Owner); // Give ownership to this biker (optional)
+        go.transform.localScale = new Vector3(1f, height, Vector3.Distance(start, end)); 
+        base.Spawn(go, base.Owner);
+        _spawnedSegments.Add(go);
     }
 
     private void RebuildMesh()
@@ -115,32 +180,51 @@ public class NetworkTrailMesh : NetworkBehaviour
         List<Vector3> verts = new List<Vector3>();
         List<int> tris = new List<int>();
 
+        // 1. BACK FACE CAP (Fill the start hole)
+        // Uses the very first point's geometry
+        var startPoint = _points.First.Value;
+        // Only draw cap if the start isn't a "Jump" (unlikely for first point, but safe)
+        if (!startPoint.IsJump) 
+        {
+            int capIdx = verts.Count;
+            verts.Add(startPoint.LeftBot);  // 0
+            verts.Add(startPoint.LeftTop);  // 1
+            verts.Add(startPoint.RightBot); // 2
+            verts.Add(startPoint.RightTop); // 3
+
+            // Winding: BL(0) -> BR(2) -> TR(3) -> TL(1) 
+            // Right x Up = Backward (-Z) -> Normal points OUT
+            AddQuad(tris, capIdx + 0, capIdx + 1, capIdx + 3, capIdx + 2);
+        }
+
+        // 2. SEGMENTS
         var node = _points.First;
         while (node.Next != null)
         {
             var p1 = node.Value;
             var p2 = node.Next.Value;
 
-            // If p1 was a jump, we DO NOT connect it to p2
             if (!p1.IsJump)
             {
                 int baseIdx = verts.Count;
+                verts.Add(p1.LeftBot);  // 0
+                verts.Add(p1.LeftTop);  // 1
+                verts.Add(p1.RightBot); // 2
+                verts.Add(p1.RightTop); // 3
+                verts.Add(p2.LeftBot);  // 4
+                verts.Add(p2.LeftTop);  // 5
+                verts.Add(p2.RightBot); // 6
+                verts.Add(p2.RightTop); // 7
 
-                // Add vertices
-                verts.Add(p1.LeftBot); verts.Add(p1.LeftTop);
-                verts.Add(p1.RightBot); verts.Add(p1.RightTop);
-                verts.Add(p2.LeftBot); verts.Add(p2.LeftTop);
-                verts.Add(p2.RightBot); verts.Add(p2.RightTop);
+                // Left Side (Outward): BL -> FL -> FT -> BT
+                AddQuad(tris, baseIdx + 0, baseIdx + 4, baseIdx + 5, baseIdx + 1); 
 
-                // Add Quads (Logic simplified for brevity, similar to original TrailMesh)
-                // Left Side
-                AddQuad(tris, baseIdx + 0, baseIdx + 1, baseIdx + 5, baseIdx + 4);
-                // Right Side
-                AddQuad(tris, baseIdx + 3, baseIdx + 2, baseIdx + 6, baseIdx + 7);
-                // Top
-                AddQuad(tris, baseIdx + 1, baseIdx + 3, baseIdx + 7, baseIdx + 5);
+                // Right Side (Outward): TR -> FR -> FB -> BB
+                AddQuad(tris, baseIdx + 3, baseIdx + 7, baseIdx + 6, baseIdx + 2); 
+                
+                // Top Face (Upward): TL -> FL -> FR -> TR
+                AddQuad(tris, baseIdx + 1, baseIdx + 5, baseIdx + 7, baseIdx + 3); 
             }
-
             node = node.Next;
         }
 
@@ -148,6 +232,7 @@ public class NetworkTrailMesh : NetworkBehaviour
         _mesh.SetVertices(verts);
         _mesh.SetTriangles(tris, 0);
         _mesh.RecalculateNormals();
+        _mesh.RecalculateBounds(); 
     }
 
     private void AddQuad(List<int> tris, int a, int b, int c, int d)
