@@ -1,5 +1,5 @@
 fileFormatVersion: 2
-guid: 5370ab30b8b778d4c934e1b3061587dd
+guid: 2c247f4266b2864eb96e6a9ae6557d31
 MonoImporter:
   externalObjects: {}
   serializedVersion: 2
@@ -13,6 +13,6 @@ AssetOrigin:
   serializedVersion: 1
   productId: 207815
   packageName: 'FishNet: Networking Evolved'
-  packageVersion: 4.6.17R
+  packageVersion: 4.6.18R
   assetPath: Assets/FishNet/CodeGenerating/ILCore/FNPostProcessorAssemblyResolver.cs
-  uploadId: 823872
+  uploadId: 826418
