@@ -5,8 +5,8 @@ TagManager:
   serializedVersion: 3
   tags:
   - NoTint
-  - Powerup
   - Portal
+  - PowerUp
   layers:
   - Default
   - TransparentFX

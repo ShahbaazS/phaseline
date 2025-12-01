@@ -218,4 +218,55 @@ public class NetworkBike : NetworkBehaviour
              _pr.Rigidbody.linearVelocity = Vector3.zero;
         }
     }
+
+    // --- Power Up API (Called by Server) ---
+
+    public void ApplyBoost(float duration, float multiplier)
+    {
+        // Apply on Server
+        StartCoroutine(CoBoost(duration, multiplier));
+        // Tell Owner (Prediction) and Observers (Visuals/Interpolation)
+        RpcApplyBoost(duration, multiplier);
+    }
+
+    public void ApplyShield(float duration)
+    {
+        // Apply on Server
+        StartCoroutine(CoShield(duration));
+        // Tell Clients (Visuals)
+        RpcApplyShield(duration);
+    }
+
+    // --- RPCs ---
+
+    [ObserversRpc]
+    void RpcApplyBoost(float duration, float multiplier)
+    {
+        // Avoid running twice on Server (Host)
+        if (!IsServerInitialized) StartCoroutine(CoBoost(duration, multiplier));
+    }
+
+    [ObserversRpc]
+    void RpcApplyShield(float duration)
+    {
+        if (!IsServerInitialized) StartCoroutine(CoShield(duration));
+    }
+
+    // --- Coroutines ---
+
+    System.Collections.IEnumerator CoBoost(float duration, float mult)
+    {
+        _controller.SetSpeedMultiplier(mult);
+        // Optional: Play Sound / Particle Effect here
+        yield return new WaitForSeconds(duration);
+        _controller.SetSpeedMultiplier(1.0f);
+    }
+
+    System.Collections.IEnumerator CoShield(float duration)
+    {
+        if (TryGetComponent<Damageable>(out var dmg)) dmg.IsInvulnerable = true;
+        // Optional: Enable Shield Bubble Visual here
+        yield return new WaitForSeconds(duration);
+        if (dmg) dmg.IsInvulnerable = false;
+    }
 }

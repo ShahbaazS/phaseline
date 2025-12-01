@@ -4,24 +4,26 @@ using UnityEngine;
 public class Damageable : MonoBehaviour
 {
     public bool IsDead { get; private set; }
+    
+    // New: Check for external invulnerability sources
+    public bool IsInvulnerable { get; set; } 
 
     public void Die()
     {
-        if (IsDead) return;
+        if (IsDead || IsInvulnerable) return; // Shield check
+        
         IsDead = true;
-        // Delegate respawn to the spawn manager
         SpawnManager.Instance?.HandleDeath(this);
     }
 
     public void Revive()
     {
         IsDead = false;
+        IsInvulnerable = false;
     }
 
-    // Added to satisfy TrailSegment collision calls
     public void TakeDamage(int amount)
     {
-        // For a lightcycle, any damage is usually fatal
         if (amount > 0) Die();
     }
 }

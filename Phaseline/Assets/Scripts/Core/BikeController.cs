@@ -45,6 +45,13 @@ public class BikeController : MonoBehaviour
     private float _lastTurnInput; 
     private bool _isDrifting;
 
+    private float _externalSpeedMultiplier = 1.0f;
+
+    public void SetSpeedMultiplier(float mult)
+    {
+        _externalSpeedMultiplier = mult;
+    }
+
     public void Awake()
     {
         rb = GetComponent<Rigidbody>();
@@ -56,6 +63,12 @@ public class BikeController : MonoBehaviour
             driftTrailWidth = driftTrail.startWidth;
             driftTrail.emitting = false;
         }
+    }
+
+    // Safety Reset
+    void OnEnable()
+    {
+        _externalSpeedMultiplier = 1.0f;
     }
 
     /// <summary>
@@ -132,7 +145,7 @@ public class BikeController : MonoBehaviour
     void DriveAlongSurface(Vector2 input, bool drifting, bool boosting, Vector3 upNormal, float dt)
     {
         Vector3 forwardDir = Vector3.ProjectOnPlane(transform.forward, upNormal).normalized;
-        float targetSpeed = maxSpeed * input.y;
+        float targetSpeed = maxSpeed * input.y * _externalSpeedMultiplier;
         Vector3 forwardVel = forwardDir * targetSpeed;
         
         Vector3 deltaVel = forwardVel - Vector3.Project(rb.linearVelocity, forwardDir);

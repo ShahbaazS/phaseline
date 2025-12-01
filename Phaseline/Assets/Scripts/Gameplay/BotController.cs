@@ -5,11 +5,18 @@ using System.Collections.Generic;
 
 [RequireComponent(typeof(BikeController))]
 [RequireComponent(typeof(Rigidbody))]
+[RequireComponent(typeof(Damageable))]
 public class BotController : MonoBehaviour
 {
     // -------- FSM --------
     public enum BotState { Scout, Evade, Cutoff, Emergency, Pathfind }
     public BotState State { get; private set; } = BotState.Scout;
+
+    [Header("Pathfinding Priorities")]
+    [Tooltip("Lower value = Higher Priority. 1.0 = Real Distance. 0.5 =appears 2x closer.")]
+    public float powerUpWeight = 0.7f; // Power-ups appear 30% closer than they really are
+    public float portalWeight = 1.0f;
+    public float goalScanRange = 100f;
 
     // --- Pathfinding ---
     BotPathfinder path;
@@ -52,6 +59,9 @@ public class BotController : MonoBehaviour
     Transform currentOpponent;                // cached best opponent across frames
     Vector3 lastLead;                         // last chosen lead (for continuity)
 
+    [Header("Powerups")]
+    public float powerUpScanRange = 60f;
+
     // -------- Gizmos --------
     [Header("Gizmos")]
     public bool drawGizmosAlways = true;   // show in Game view too (toggle Gizmos in Game view)
@@ -60,6 +70,7 @@ public class BotController : MonoBehaviour
 
     // cached refs/state
     BikeController bike;
+    Damageable hp;
     Rigidbody rb;
     Transform tr;
     float thinkT, lastTurnSign;
@@ -76,6 +87,7 @@ public class BotController : MonoBehaviour
     void Awake()
     {
         bike = GetComponent<BikeController>();
+        hp = GetComponent<Damageable>();
         rb   = GetComponent<Rigidbody>();
         tr = transform;
         path = GetComponent<BotPathfinder>();
@@ -412,14 +424,74 @@ public class BotController : MonoBehaviour
 
     Transform FindNearestGoal()
     {
-        var gos = GameObject.FindGameObjectsWithTag("Portal");
-        Transform best = null; float bd = float.MaxValue; Vector3 p = transform.position;
-        foreach (var g in gos)
+        Vector3 p = transform.position;
+        Transform best = null; 
+        float bestScore = float.MaxValue; 
+
+        // 1. Scan Portals
+        foreach (var g in GameObject.FindGameObjectsWithTag("Portal"))
         {
-            float d = (g.transform.position - p).sqrMagnitude;
-            if (d < bd) { bd = d; best = g.transform; }
+            float d = Vector3.Distance(g.transform.position, p);
+            if (d > goalScanRange) continue;
+
+            float score = d * portalWeight; // Base Score
+            if (score < bestScore) { bestScore = score; best = g.transform; }
         }
+
+        // 2. Scan PowerUps
+        foreach (var g in GameObject.FindGameObjectsWithTag("PowerUp"))
+        {
+            // Ignore if disabled/collected
+            var col = g.GetComponent<Collider>();
+            if (!col || !col.enabled) continue;
+
+            float d = Vector3.Distance(g.transform.position, p);
+            if (d > goalScanRange) continue;
+
+            // Apply Weight: If powerUpWeight is 0.7, a 20m item counts as 14m score.
+            // This makes the bot prioritize it over a 15m Portal.
+            float score = d * powerUpWeight; 
+            
+            if (score < bestScore) { bestScore = score; best = g.transform; }
+        }
+
         return best;
+    }
+
+    // ---------------- NEW ABILITIES ----------------
+
+    public void ApplyBoost(float duration, float multiplier)
+    {
+        StopCoroutine("CoBoost");
+        StartCoroutine(CoBoost(duration, multiplier));
+    }
+
+    public void ApplyShield(float duration)
+    {
+        StopCoroutine("CoShield");
+        StartCoroutine(CoShield(duration));
+    }
+
+    IEnumerator CoBoost(float duration, float multiplier)
+    {
+        // Bots don't need prediction, so we set the multiplier directly
+        bike.SetSpeedMultiplier(multiplier);
+        yield return new WaitForSeconds(duration);
+        bike.SetSpeedMultiplier(1.0f);
+    }
+
+    IEnumerator CoShield(float duration)
+    {
+        if (hp) hp.IsInvulnerable = true;
+        yield return new WaitForSeconds(duration);
+        if (hp) hp.IsInvulnerable = false;
+    }
+
+    // Ensure state resets on death/respawn
+    void OnEnable()
+    {
+        if (bike) bike.SetSpeedMultiplier(1.0f);
+        if (hp) hp.IsInvulnerable = false;
     }
 
     // -------------------- GIZMOS --------------------
