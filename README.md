@@ -7,13 +7,13 @@ Players must outmaneuver rivals to be the last bike standing.
 ## 🚀 Getting Started
 
 ### Prerequisites
-* Unity 2021.3+ (Recommended)
+* Unity 6+ (Recommended)
 * **FishNet: Networking Evolved** (Free package from the Asset Store)
 
 ### Setup & Installation
 1.  **Clone the Repository**:
     ```bash
-    git clone [https://github.com/YourUsername/Phaseline.git](https://github.com/YourUsername/Phaseline.git)
+    git clone [https://github.com/ShahbaazS/phaseline.git](https://github.com/ShahbaazS/phaseline.git)
     ```
 2.  **Open in Unity**: Add the project folder to Unity Hub and open.
 3.  **Install FishNet**: If not already present in `Packages`, download and import FishNet from the Unity Asset Store or Package Manager.
