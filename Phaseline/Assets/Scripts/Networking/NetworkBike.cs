@@ -8,11 +8,11 @@ public class NetworkBike : NetworkBehaviour
 {
     [Header("Input Settings")]
     [Range(0f, 1f)] public float minThrottle = 0.6f;
+    
     private BikeController _controller;
     private PredictionRigidbody _pr;
     private PlayerControls _controls;
 
-    // Structs for FishNet 4.6 Prediction V2
     public struct BikeInputData : IReplicateData
     {
         public Vector2 MoveInput;
@@ -43,6 +43,7 @@ public class NetworkBike : NetworkBehaviour
     {
         _controller = GetComponent<BikeController>();
         _pr = new PredictionRigidbody();
+        // Pass PredictionRigidbody the RB to manage
         _pr.Initialize(GetComponent<Rigidbody>());
         _controls = new PlayerControls();
     }
@@ -51,29 +52,25 @@ public class NetworkBike : NetworkBehaviour
     {
         base.OnStartNetwork();
         
-        // Check if this bike belongs to the local player
+        // 1. Setup Input & Camera for Owner
         if (base.Owner.IsLocalClient)
         {
-            // Enable Inputs
             _controls.Enable();
-            TimeManager.OnTick += TimeManager_OnTick;
-
-            // --- CAMERA ASSIGNMENT ---
-            // Find the main camera and set its target to this bike
+            
             var cam = Camera.main?.GetComponent<FollowCamera>();
-            if (cam != null)
-            {
-                cam.target = transform;
-            }
-            else
-            {
-                Debug.LogWarning("[NetworkBike] FollowCamera not found on MainCamera!");
-            }
+            if (cam != null) cam.target = transform;
         }
 
-        // Server-side logic for prediction
-        if (base.IsServerInitialized)
+        // 2. Physics Setup
+        // Enable physics simulation if we are the Owner (Prediction) or the Server (Authority)
+        // Observers will have kinematic rigidbodies and just snap to position via Reconcile
+        bool isPhysicsActive = base.Owner.IsLocalClient || base.IsServerInitialized;
+        _pr.Rigidbody.isKinematic = !isPhysicsActive;
+
+        // 3. Subscriptions
+        if (base.IsServerInitialized || base.IsClientInitialized)
         {
+            TimeManager.OnTick += TimeManager_OnTick;
             TimeManager.OnPostTick += TimeManager_OnPostTick;
         }
     }
@@ -85,53 +82,64 @@ public class NetworkBike : NetworkBehaviour
         TimeManager.OnTick -= TimeManager_OnTick;
         TimeManager.OnPostTick -= TimeManager_OnPostTick;
     }
+    
+    // VISUALS LOOP
+    private void Update()
+    {
+        // Smoothly interpolate visuals every frame based on the physics state
+        // We pass Time.deltaTime here because this is for interpolation, not physics steps
+        _controller.UpdateVisuals(Time.deltaTime);
+    }
 
-    // 1. Gather Input (Client Only)
+    // 1. Gather Input (Runs on Client and Server)
     private void TimeManager_OnTick()
     {
-        if (!base.IsOwner) return;
-
-        // Read Raw Input
-        Vector2 rawInput = _controls.Gameplay.Move.ReadValue<Vector2>();
-
-        // Apply Auto-Throttle Logic
-        // Ignore 'S' (reverse) by clamping 0..1, then ensure we never go below minThrottle
-        float throttle = Mathf.Clamp01(rawInput.y);
-        throttle = Mathf.Max(throttle, minThrottle);
-
-        // Create the Input Data
-        BikeInputData data = new BikeInputData
+        if (base.IsOwner)
         {
-            // Pass the processed throttle (x = steer, y = throttle)
-            MoveInput = new Vector2(rawInput.x, throttle),
-            Drift = _controls.Gameplay.Drift.IsPressed(),
-            Boost = _controls.Gameplay.Boost.IsPressed(),
-            Jump = _controls.Gameplay.Jump.WasPressedThisFrame() 
-        };
+            // Read Inputs
+            Vector2 rawInput = _controls.Gameplay.Move.ReadValue<Vector2>();
+            float throttle = Mathf.Clamp01(rawInput.y);
+            throttle = Mathf.Max(throttle, minThrottle);
 
-        Replicate(data);
+            BikeInputData data = new BikeInputData
+            {
+                MoveInput = new Vector2(rawInput.x, throttle),
+                Drift = _controls.Gameplay.Drift.IsPressed(),
+                Boost = _controls.Gameplay.Boost.IsPressed(),
+                Jump = _controls.Gameplay.Jump.WasPressedThisFrame() 
+            };
+
+            // Send to server / Run locally
+            Replicate(data);
+        }
+        else if (base.IsServerInitialized)
+        {
+            // Server calls Replicate with default/empty data, 
+            // FishNet automatically fills it with the client's packet
+            Replicate(default);
+        }
     }
-    // 2. Run Logic (Client & Server)
+
+    // 2. Run Physics Logic (Prediction)
     [Replicate]
     private void Replicate(BikeInputData data, ReplicateState state = ReplicateState.Invalid, Channel channel = Channel.Unreliable)
     {
-        // Use TimeManager.TickDelta (fixed time step for prediction)
+        // Use FishNet's TickDelta for consistent physics steps
         float dt = (float)base.TimeManager.TickDelta;
-        _controller.Move(data.MoveInput, data.Drift, data.Boost, data.Jump, dt);
+        
+        // Call the PURE physics method
+        _controller.Simulate(data.MoveInput, data.Drift, data.Boost, data.Jump, dt);
     }
 
-    // 3. Trigger Reconcile Creation (Server Only)
+    // 3. Create State Snapshot (Server Only)
     private void TimeManager_OnPostTick()
     {
-        // Only the server needs to create reconciliation data to send to clients
         if (base.IsServerInitialized)
         {
             CreateReconcile();
         }
     }
 
-    // 4. Create Snapshot (Override - Parameterless)
-    // FIX: Removed arguments to match FishNet V2 base method signature
     public override void CreateReconcile()
     {
         BikeReconcileData data = new BikeReconcileData
@@ -145,37 +153,69 @@ public class NetworkBike : NetworkBehaviour
         Reconcile(data);
     }
 
-    // 5. Correct Mistakes (Client Only)
+    // 4. Correct Mistakes (Client Only)
     [Reconcile]
     private void Reconcile(BikeReconcileData data, Channel channel = Channel.Unreliable)
     {
+        // Snap Transform
         transform.position = data.Position;
         transform.rotation = data.Rotation;
+        
+        // Snap Physics
         _pr.Rigidbody.linearVelocity = data.Velocity;
         _pr.Rigidbody.angularVelocity = data.AngularVelocity;
     }
-
-    // API for Portals/Teleports
+    
+    // Server-side entry point for Portals and Spawns
     public void Teleport(Vector3 pos, Quaternion rot)
     {
-        // 1. Cap the old trail at the CURRENT position (Before Move)
-        if (TryGetComponent<NetworkTrailMesh>(out var trail))
-        {
-            trail.NotifyTeleportStart();
-        }
+        // 1. Move on Server immediately (so physics/checks work)
+        TeleportInternal(pos, rot);
 
-        // 2. Perform the Move
+        // 2. Tell all Clients (especially the Owner) to force this position
+        // BufferLast = true ensures that if a client joins later, they get the latest position.
+        ObserversTeleport(pos, rot);
+    }
+
+    // Logic shared by Server and Client
+    private void TeleportInternal(Vector3 pos, Quaternion rot)
+    {
+        // Handle trail cutting (Visuals)
+        if (TryGetComponent<NetworkTrailMesh>(out var trail)) trail.NotifyTeleportStart();
+
+        // Physically move transform and Rigidbody
         transform.position = pos;
         transform.rotation = rot;
+        
+        // CRITICAL: Reset Physics State
+        // If we don't zero velocity, the bike might "launch" out of the spawn point
         _pr.Rigidbody.position = pos;
         _pr.Rigidbody.rotation = rot;
         _pr.Rigidbody.linearVelocity = Vector3.zero; 
         _pr.Rigidbody.angularVelocity = Vector3.zero;
 
-        // 3. Start new trail segment at the NEW position (After Move)
-        if (trail)
+        if (TryGetComponent<FishNet.Component.Transforming.NetworkTransform>(out var nt))
         {
-            trail.NotifyTeleportEnd(pos);
+            nt.Teleport(); 
+        }
+
+        // Resume trail (Visuals)
+        if (trail) trail.NotifyTeleportEnd(pos);
+    }
+
+    [ObserversRpc(BufferLast = true)]
+    private void ObserversTeleport(Vector3 pos, Quaternion rot)
+    {
+        // Clients run this to snap to the new point
+        TeleportInternal(pos, rot);
+        
+        // CRITICAL: Clear Prediction Buffer (Client Owner Only)
+        // This prevents the client from replaying "old" inputs that happened before death
+        if (IsOwner)
+        {
+            // If using FishNet 4.6+ Prediction V2, we may need to acknowledge the reset
+            // Usually setting the RB state is enough, but ensuring controls don't jitter is good.
+             _pr.Rigidbody.linearVelocity = Vector3.zero;
         }
     }
 }

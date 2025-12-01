@@ -38,10 +38,12 @@ public class BikeController : MonoBehaviour
     private float driftTrailWidth = 0.5f;
     private float driftTrailVelocity = 10f;
 
-    // Audio removed for brevity/network safety, or can be re-added if client-side only.
-
     private Rigidbody rb;
     private Vector3 currentSurfaceNormal = Vector3.up;
+
+    // Cache state for visuals to read
+    private float _lastTurnInput; 
+    private bool _isDrifting;
 
     public void Awake()
     {
@@ -57,10 +59,14 @@ public class BikeController : MonoBehaviour
     }
 
     /// <summary>
-    /// Pure physics step. Pass in 'dt' (delta time) explicitly.
+    /// Pure Physics Simulation. Safe to call multiple times for prediction.
+    /// NO VISUALS HERE.
     /// </summary>
-    public void Move(Vector2 input, bool drifting, bool boosting, bool jumping, float dt)
+    public void Simulate(Vector2 input, bool drifting, bool boosting, bool jumping, float dt)
     {
+        _lastTurnInput = input.x;
+        _isDrifting = drifting;
+
         // Raycast out to the stick threshold
         bool nearSurface = Physics.Raycast(
             transform.position,
@@ -78,7 +84,6 @@ public class BikeController : MonoBehaviour
             if (grounded && jumping)
             {
                 rb.AddForce(currentSurfaceNormal * jumpForce, ForceMode.Impulse);
-                // No return here, allowing visuals to update even on jump frame
             }
             else
             {
@@ -98,11 +103,19 @@ public class BikeController : MonoBehaviour
             rb.AddForce(Physics.gravity, ForceMode.Acceleration);
             StabilizeAndAlign(Vector3.up, dt);
         }
+    }
 
+    /// <summary>
+    /// Updates Visuals (Banking, Wheels, Trails). 
+    /// Call this from Update() or LateUpdate(), NEVER inside Replicate().
+    /// </summary>
+    public void UpdateVisuals(float dt)
+    {
         // Handle Visuals
-        VisualBank(input.x, dt);
+        VisualBank(_lastTurnInput, dt);
+        AlignVisualToGround(dt);
         UpdateWheelRotation(dt);
-        DriftTrailEffect(drifting);
+        DriftTrailEffect(_isDrifting);
         Sparks();
     }
 
@@ -111,10 +124,9 @@ public class BikeController : MonoBehaviour
         Vector3 upError = Vector3.Cross(transform.up, upNormal);
         rb.AddTorque(upError * uprightTorque, ForceMode.Acceleration);
 
+        // Physics rotation for the Rigidbody (Game Logic)
         Quaternion goal = Quaternion.FromToRotation(transform.up, upNormal) * rb.rotation;
         rb.MoveRotation(Quaternion.Slerp(rb.rotation, goal, slopeAlignSpeed * dt));
-
-        AlignVisualToGround(dt);
     }
 
     void DriveAlongSurface(Vector2 input, bool drifting, bool boosting, Vector3 upNormal, float dt)
@@ -139,9 +151,12 @@ public class BikeController : MonoBehaviour
         }
     }
 
+    // --- Visuals (No Physics Forces Here) ---
+
     public void AlignVisualToGround(float dt)
     {
         if (!visualModel) return;
+        // Visual-only raycast
         if (Physics.Raycast(transform.position, -transform.up, out RaycastHit hit, groundRayLength * 2f, groundLayer))
         {
             Quaternion slopeRotation = Quaternion.FromToRotation(visualModel.up, hit.normal) * visualModel.rotation;
@@ -149,16 +164,12 @@ public class BikeController : MonoBehaviour
         }
     }
 
-    // --- Visuals Restored ---
-
     void VisualBank(float turnInput, float dt)
     {
         if (!visualModel || !rb) return;
         float currentVelocityOffset = rb.linearVelocity.magnitude / maxSpeed;
         float targetBank = -turnInput * maxBankingAngle * currentVelocityOffset;
 
-        // Convert local rotation manipulation to be safe with the new AlignVisualToGround logic
-        // We apply banking to the local Z axis relative to the visual model's parent
         Quaternion targetRotation = Quaternion.Euler(visualModel.localEulerAngles.x, visualModel.localEulerAngles.y, targetBank);
         visualModel.localRotation = Quaternion.Slerp(visualModel.localRotation, targetRotation, dt * visualBankingSpeed);
     }

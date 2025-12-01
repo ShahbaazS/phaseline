@@ -3,33 +3,32 @@ using UnityEngine;
 
 public class TrailSegment : NetworkBehaviour
 {
-    [Tooltip("How long this segment stays active")]
-    public float lifetime = 5f;
-
-    public override void OnStartServer()
-    {
-        base.OnStartServer();
-        // Destroy self after lifetime (Server handles destruction)
-        Invoke(nameof(Despawn), lifetime);
-    }
-
-    void Despawn()
-    {
-        if (base.IsServerInitialized) base.Despawn();
-    }
+    [Tooltip("If true, you cannot die by hitting your own trail.")]
+    public bool ignoreSelf = false;
 
     private void OnTriggerEnter(Collider other)
     {
+        // Server only logic
         if (!base.IsServerInitialized) return;
 
-        // Ensure we don't kill the person who laid the trail (if overlapping initially)
-        // or check collision logic layers.
+        // 1. Look for Damageable on the object or its parents (Safer)
+        var hp = other.GetComponentInParent<Damageable>();
         
-        if (other.TryGetComponent<Damageable>(out var hp))
+        if (hp != null)
         {
-            // Optional: check ownership via base.OwnerId vs other NetworkObject
-            if (base.OwnerId == other.GetComponent<NetworkObject>().OwnerId) return;
+            // 2. Check Ownership (Prevent self-kill ONLY if ignoreSelf is true)
+            if (ignoreSelf)
+            {
+                var otherNetObj = other.GetComponentInParent<NetworkObject>();
+                // If both are networked and have the same owner, ignore the collision
+                if (otherNetObj != null && base.OwnerId == otherNetObj.OwnerId) 
+                {
+                    return;
+                }
+            }
             
+            // 3. Deal Damage
+            Debug.Log($"[TrailSegment] Hit {other.name}, causing death.");
             hp.TakeDamage(100);
         }
     }

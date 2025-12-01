@@ -24,7 +24,6 @@ public class SpawnManager : NetworkBehaviour
     private readonly List<Transform> points = new();
     private int nextIdx;
     
-    // We track (GameObject, isPlayer) to handle respawns
     private readonly Dictionary<Damageable, (GameObject go, bool isPlayer)> registry = new();
 
     void Awake()
@@ -41,17 +40,14 @@ public class SpawnManager : NetworkBehaviour
     {
         base.OnStartServer();
 
-        // 1. Spawn Bots (Server Owned - Pass 'null' as owner)
         for (int i = 0; i < botCount; i++)
             Spawn(botBikePrefab, out _, false, null);
 
-        // 2. Spawn for clients ALREADY connected (This usually catches the Host)
         foreach (var conn in InstanceFinder.ServerManager.Clients.Values)
         {
             SpawnPlayer(conn);
         }
 
-        // 3. Listen for FUTURE connections (Clients joining late)
         InstanceFinder.ServerManager.OnRemoteConnectionState += OnRemoteConnectionState;
 
         RefreshOpponents();
@@ -66,7 +62,6 @@ public class SpawnManager : NetworkBehaviour
 
     private void OnRemoteConnectionState(NetworkConnection conn, RemoteConnectionStateArgs args)
     {
-        // When a client connects, spawn their specific player
         if (args.ConnectionState == RemoteConnectionState.Started)
         {
             SpawnPlayer(conn);
@@ -76,7 +71,6 @@ public class SpawnManager : NetworkBehaviour
 
     void SpawnPlayer(NetworkConnection conn)
     {
-        // Spawn a player bike and give ownership to 'conn'
         Spawn(playerBikePrefab, out var dmg, true, conn);
     }
 
@@ -87,7 +81,6 @@ public class SpawnManager : NetworkBehaviour
         var sp = NextPoint();
         var go = Instantiate(prefab, sp ? sp.position : Vector3.zero, sp ? sp.rotation : Quaternion.identity);
         
-        // CRITICAL: Spawn with specific ownership
         InstanceFinder.ServerManager.Spawn(go, owner);
 
         go.TryGetComponent(out dmg);
@@ -108,9 +101,6 @@ public class SpawnManager : NetworkBehaviour
         if (!registry.TryGetValue(dmg, out var info)) return;
         var go = info.go;
 
-        var trail = go.GetComponent<NetworkTrailMesh>();
-        if (trail) trail.ClearTrail();
-
         // Hide object while dead
         go.SetActive(false); 
         StartCoroutine(CoRespawn(dmg, info.isPlayer));
@@ -120,45 +110,36 @@ public class SpawnManager : NetworkBehaviour
     {
         yield return new WaitForSeconds(respawnDelay);
 
-        if (!registry.TryGetValue(dmg, out var info))
-            yield break;
-
+        if (!registry.TryGetValue(dmg, out var info)) yield break;
         var go = info.go;
 
-        // Clean trail again just in case
+        // 1. Determine Spawn Point
+        var sp = NextPoint();
+        Vector3 spawnPos = sp ? sp.position : Vector3.zero;
+        Quaternion spawnRot = sp ? sp.rotation : Quaternion.identity;
+
+        // 2. ACTIVATE FIRST (Critical Fix)
+        go.transform.SetPositionAndRotation(spawnPos, spawnRot);
+        go.SetActive(true);
+        dmg.Revive();
+
+        // 3. Clear Trail
         if (go.TryGetComponent<NetworkTrailMesh>(out var trail)) 
             trail.ClearTrail();
 
-        var sp = NextPoint();
-        
-        // Reset Position & Rotation
-        go.transform.SetPositionAndRotation(sp ? sp.position : Vector3.zero, sp ? sp.rotation : Quaternion.identity);
-        
-        // Force Sync Transform
-        if (go.TryGetComponent<NetworkTransform>(out var nt))
-             nt.Teleport();
-
-        // Reset Physics
+        // 4. Teleport
         if (go.TryGetComponent<NetworkBike>(out var bike))
-             bike.Teleport(go.transform.position, go.transform.rotation);
+            bike.Teleport(spawnPos, spawnRot);
 
-        dmg.Revive();
-        go.SetActive(true);
-
-        if (trail) trail.ResumeTrail();
-
-        if (go.TryGetComponent<NavMeshAgent>(out var agent))
-            agent.Warp(go.transform.position);
-
-        if (go.TryGetComponent<SpawnProtection>(out var prot))
-            prot.EnableFor(2f);
+        // 5. Reset other systems
+        if (go.TryGetComponent<SpawnProtection>(out var prot)) prot.EnableFor(2f);
+        if (go.TryGetComponent<UnityEngine.AI.NavMeshAgent>(out var agent)) agent.Warp(spawnPos);
 
         RefreshOpponents();
     }
 
     void RefreshOpponents()
     {
-        // Update Bot target lists
         var allRiders = registry.Values
             .Where(v => v.go != null)
             .Select(v => v.go.transform)

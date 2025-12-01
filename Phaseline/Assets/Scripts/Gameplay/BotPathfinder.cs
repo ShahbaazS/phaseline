@@ -78,7 +78,7 @@ public class BotPathfinder : MonoBehaviour
 
         if (!target)
         {
-            bike.Move(new Vector2(0f, 1f), false, false, false, Time.fixedDeltaTime);
+            bike.Simulate(new Vector2(0f, 1f), false, false, false, Time.fixedDeltaTime);
             return;
         }
 
@@ -89,7 +89,7 @@ public class BotPathfinder : MonoBehaviour
 
         if (!agent.hasPath || agent.pathPending)
         {
-            bike.Move(new Vector2(0f, 1f), false, false, false, Time.fixedDeltaTime);
+            bike.Simulate(new Vector2(0f, 1f), false, false, false, Time.fixedDeltaTime);
             return;
         }
 
@@ -100,7 +100,7 @@ public class BotPathfinder : MonoBehaviour
 
         if (to.sqrMagnitude < arriveDist * arriveDist)
         {
-            bike.Move(new Vector2(0f, 1f), false, false, false, Time.fixedDeltaTime);
+            bike.Simulate(new Vector2(0f, 1f), false, false, false, Time.fixedDeltaTime);
             return;
         }
 
@@ -125,7 +125,7 @@ public class BotPathfinder : MonoBehaviour
             throttle = Mathf.Lerp(0.65f, 1f, Mathf.InverseLerp(180f, brakeAngleDeg, Mathf.Abs(alphaDeg)));
         }
 
-        bike.Move(new Vector2(steerCmd, throttle), shouldDrift, false, false, Time.fixedDeltaTime);
+        bike.Simulate(new Vector2(steerCmd, throttle), shouldDrift, false, false, Time.fixedDeltaTime);
     }
 
     public void SetTargetPosition(Vector3 worldPos)
@@ -146,13 +146,13 @@ public class BotPathfinder : MonoBehaviour
         var data = agent.currentOffMeshLinkData;
 
         // CHANGED: Use NetworkTrailMesh
-        if (TryGetComponent<NetworkTrailMesh>(out var trail)) trail.PauseTrail();
+        if (TryGetComponent<NetworkTrailMesh>(out var trail)) trail.NotifyTeleportStart();
 
         Vector3 end = data.endPos; end.y = transform.position.y;
         transform.position = end;
 
         // CHANGED: Use NetworkTrailMesh
-        if (trail) trail.ResumeTrailAt(end);
+        if (trail) trail.NotifyTeleportEnd(end);
 
         agent.CompleteOffMeshLink();
         agent.Warp(transform.position);
